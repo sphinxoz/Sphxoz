@@ -1,7 +1,7 @@
 -- ============================================
--- SPHXZ v4.2 + OG SNIPER INTEGRADO
--- Interface modificada - Sem emoji
--- SEM SISTEMA DE AUTH
+-- SPHXZ AUTH SYSTEM v4.3 + OG SNIPER INTEGRADO
+-- OG Sniper otimizado - sem remover chat/mapa
+-- Keys compartilháveis entre usuários
 -- ============================================
 
 local HttpService = game:GetService("HttpService")
@@ -13,7 +13,7 @@ local RunService = game:GetService("RunService")
 local Lighting = game:GetService("Lighting")
 local Camera = workspace.CurrentCamera
 local Workspace = game:GetService("Workspace")
-local Terrain = workspace:FindFirstChildOfClass("Terrain")
+local Terrain = Workspace:FindFirstChildOfClass("Terrain")
 
 -- CONFIG FILE PATH
 local CONFIG_FILE = "AimbotConfig_Saved.json"
@@ -119,13 +119,14 @@ local originalTerrainDecoration = nil
 local plasticMapEnabled = false
 
 -- ============================================
--- VARIAVEIS OG SNIPER
+-- VARIAVEIS OG SNIPER (OTIMIZADAS)
 -- ============================================
 local ogSniperEnabled = false
 local scopeRemovalConnection = nil
 local sniperDelayConnection = nil
 local originalScopes = {}
 local customCrosshair = nil
+local lastSniperCheck = 0
 
 -- ============================================
 -- TEMA
@@ -158,6 +159,86 @@ end
 local function WriteFile(f, d)
     if typeof(writefile) == "function" then
         pcall(writefile, f, d)
+    end
+end
+
+local function LoadDB()
+    local d = ReadFile("SPHXZ_KeysDatabase.json")
+    if d then
+        local s, t = pcall(HttpService.JSONDecode, HttpService, d)
+        if s then return t end
+    end
+    return { keys = {} }
+end
+
+local function SaveDB(db)
+    WriteFile("SPHXZ_KeysDatabase.json", HttpService:JSONEncode(db))
+end
+
+local function GetHWID()
+    return tostring(LocalPlayer.UserId) .. "-" .. tostring(game.PlaceId)
+end
+
+-- ============================================
+-- VALIDACAO DE KEY (COMPARTILHAVEL)
+-- ============================================
+local function ValidateKey(key)
+    key = key:upper():gsub("%s+", "")
+    local db = LoadDB()
+    local dk = db.keys and db.keys[key]
+    
+    if dk then
+        if not dk.active then return false, "Key desativada" end
+        if os.time() > dk.expires then return false, "Key expirada" end
+        
+        -- Verificar limite de usos (apenas se maxUses estiver definido e > 0)
+        if dk.maxUses and dk.maxUses > 0 then
+            if dk.useCount and dk.useCount >= dk.maxUses then
+                -- Verifica se este usuário já está na lista de usuários permitidos
+                local userId = tostring(LocalPlayer.UserId)
+                if not dk.allowedUsers or not dk.allowedUsers[userId] then
+                    return false, "Limite de usos atingido"
+                end
+            end
+        end
+        
+        -- Registrar uso apenas se for primeira vez deste usuário
+        local userId = tostring(LocalPlayer.UserId)
+        dk.allowedUsers = dk.allowedUsers or {}
+        
+        if not dk.allowedUsers[userId] then
+            dk.allowedUsers[userId] = true
+            dk.useCount = (dk.useCount or 0) + 1
+            dk.usedBy = LocalPlayer.Name
+            dk.hwid = GetHWID()
+            dk.lastUsed = os.time()
+            SaveDB(db)
+        end
+        
+        return true, "OK"
+    end
+    
+    return false, "Key invalida"
+end
+
+local function SaveCache(key)
+    WriteFile("SPHXZ_AuthCache.json", HttpService:JSONEncode({
+        key = key, savedAt = os.time(), username = LocalPlayer.Name
+    }))
+end
+
+local function LoadCache()
+    local d = ReadFile("SPHXZ_AuthCache.json")
+    if d then
+        local s, t = pcall(HttpService.JSONDecode, HttpService, d)
+        if s then return t.key end
+    end
+    return nil
+end
+
+local function ClearCache()
+    if typeof(delfile) == "function" and typeof(isfile) == "function" then
+        if isfile("SPHXZ_AuthCache.json") then pcall(delfile, "SPHXZ_AuthCache.json") end
     end
 end
 
@@ -293,7 +374,7 @@ local contentEHScroll = nil
 -- Variáveis MISC
 local plasticMapBtn = nil
 
--- Variáveis Sky
+-- Variáveis Sky - INICIALIZAR A TABELA AQUI
 local skyButtons = {}
 
 -- ============================================
@@ -551,22 +632,36 @@ local function UpdateBlockedPlayersList()
 end
 
 -- ============================================
--- SISTEMA OG SNIPER
+-- SISTEMA OG SNIPER OTIMIZADO
+-- Não remove chat, não remove mapa, não trava
 -- ============================================
 
--- Função: No Scope
+-- Função: No Scope (apenas remove scope da sniper em mãos)
 local function EnableNoScope()
     if scopeRemovalConnection then return end
     
     scopeRemovalConnection = RunService.Heartbeat:Connect(function()
         if not ogSniperEnabled then return end
         
+        -- Verificação otimizada - a cada 0.1 segundos
+        local currentTime = tick()
+        if currentTime - lastSniperCheck < 0.1 then return end
+        lastSniperCheck = currentTime
+        
         local character = LocalPlayer.Character
         if not character then return end
         
-        local sniper = character:FindFirstChild("Sniper")
-        if sniper then
-            sniper:SetAttribute("Scope", false)
+        -- Apenas verifica a tool atual, não percorre todo o jogo
+        local tool = character:FindFirstChildOfClass("Tool")
+        if tool then
+            local toolName = tool.Name:lower()
+            if toolName:find("sniper") or toolName:find("barret") or toolName:find("intervention") or toolName:find("awp") then
+                -- Remove apenas atributos de scope da sniper específica
+                pcall(function()
+                    tool:SetAttribute("Scope", false)
+                    tool:SetAttribute("Scoped", false)
+                end)
+            end
         end
     end)
 end
@@ -578,7 +673,7 @@ local function DisableNoScope()
     end
 end
 
--- Função: Fast Sniper
+-- Função: Fast Sniper (aplica delay apenas na sniper em mãos)
 local function EnableFastSniper()
     if sniperDelayConnection then return end
     
@@ -588,10 +683,17 @@ local function EnableFastSniper()
         local character = LocalPlayer.Character
         if not character then return end
         
-        local sniper = character:FindFirstChild("Sniper")
-        if sniper then
-            sniper:SetAttribute("ShootDelay", 0.5)
-            sniper:SetAttribute("AimDelay", 0)
+        -- Apenas modifica a sniper atual em mãos
+        local tool = character:FindFirstChildOfClass("Tool")
+        if tool then
+            local toolName = tool.Name:lower()
+            if toolName:find("sniper") or toolName:find("barret") or toolName:find("intervention") or toolName:find("awp") then
+                pcall(function()
+                    tool:SetAttribute("ShootDelay", 0.1)
+                    tool:SetAttribute("AimDelay", 0)
+                    tool:SetAttribute("ReloadDelay", 0.1)
+                end)
+            end
         end
     end)
 end
@@ -603,36 +705,39 @@ local function DisableFastSniper()
     end
 end
 
--- Função: Remover Mira Preta
+-- Função: Remover Mira Preta (apenas elementos de scope da sniper, não chat/mapa)
 local function removerMiraPreta()
-    local guis = LocalPlayer.PlayerGui:GetChildren()
-    for _, gui in pairs(guis) do
+    -- Apenas verifica ScreenGui relacionados a sniper/scope
+    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if not playerGui then return end
+    
+    -- Lista de nomes específicos de GUIs de scope para evitar remover chat/mapa
+    local scopeNames = {"sniper", "scope", "scopeframe", "snipergui", "aimscope", "scopeoverlay", "blackscope"}
+    
+    for _, gui in ipairs(playerGui:GetChildren()) do
         if gui:IsA("ScreenGui") then
-            for _, filho in pairs(gui:GetChildren()) do
-                if filho:IsA("Frame") then
-                    if filho.BackgroundColor3 == Color3.fromRGB(0, 0, 0) then
-                        if filho.Size.X.Scale >= 0.3 or filho.Size.Y.Scale >= 0.3 then
-                            pcall(function()
-                                filho.Visible = false
-                                filho.Enabled = false
-                            end)
-                        end
-                    end
-                    local nome = filho.Name:lower()
-                    if nome:find("sniper") or nome:find("scope") or nome:find("crosshair") or nome:find("aim") or nome:find("black") or nome:find("overlay") then
-                        pcall(function()
-                            filho.Visible = false
-                            filho.Enabled = false
-                        end)
-                    end
+            local guiName = gui.Name:lower()
+            -- Só processa GUIs que parecem ser de scope
+            local isScopeGui = false
+            for _, name in ipairs(scopeNames) do
+                if guiName:find(name) then
+                    isScopeGui = true
+                    break
                 end
-                if filho:IsA("ImageLabel") then
-                    local nome = filho.Name:lower()
-                    if nome:find("sniper") or nome:find("scope") or nome:find("crosshair") or nome:find("aim") then
-                        pcall(function()
-                            filho.Visible = false
-                            filho.Enabled = false
-                        end)
+            end
+            
+            if isScopeGui then
+                for _, filho in ipairs(gui:GetChildren()) do
+                    if filho:IsA("Frame") or filho:IsA("ImageLabel") then
+                        local nome = filho.Name:lower()
+                        -- Apenas esconde elementos pretos grandes que são claramente scopes
+                        if filho:IsA("Frame") and filho.BackgroundColor3 == Color3.fromRGB(0, 0, 0) then
+                            if filho.Size.X.Scale >= 0.5 and filho.Size.Y.Scale >= 0.5 then
+                                pcall(function()
+                                    filho.Visible = false
+                                end)
+                            end
+                        end
                     end
                 end
             end
@@ -659,15 +764,8 @@ local function ToggleOGSniper()
     UpdateUI()
 end
 
--- Manter mira preta removida
-RunService.RenderStepped:Connect(function()
-    if ogSniperEnabled then
-        removerMiraPreta()
-    end
-end)
-
 -- ============================================
--- SISTEMA PLASTIC MAP (FPS BOOSTER)
+-- SISTEMA PLASTIC MAP (FPS BOOSTER) - CORRIGIDO
 -- ============================================
 local function SaveOriginalLighting()
     originalLightingSettings = {
@@ -1036,10 +1134,14 @@ RunService.RenderStepped:Connect(function()
     
     local tool = character:FindFirstChildOfClass("Tool")
     
+    -- OG Sniper otimizado - verificação leve
     if ogSniperEnabled and tool then
         local toolName = tool.Name:lower()
         if toolName:find("sniper") or toolName:find("barret") or toolName:find("intervention") then
-            removerMiraPreta()
+            -- Apenas chama remover mira preta ocasionalmente (a cada 1 segundo)
+            if tick() % 1 < 0.05 then
+                removerMiraPreta()
+            end
         end
     end
     
@@ -1420,13 +1522,14 @@ coroutine.wrap(function()
 end)()
 
 -- ============================================
--- SISTEMA DE SAVE/LOAD
+-- SISTEMA DE SAVE/LOAD (CORRIGIDO PARA INCLUIR CEU)
 -- ============================================
 local function SaveConfigToFile()
     if typeof(writefile) ~= "function" then
         return false
     end
     
+    -- NÃO salvar o estado do Plastic Map (conforme solicitado)
     local configToSave = {}
     for key, value in pairs(Config) do
         configToSave[key] = value
@@ -1456,6 +1559,7 @@ local function LoadConfigFromFile()
     
     if success and result then
         for key, value in pairs(result) do
+            -- Não carregar PlasticMap_Enabled (conforme solicitado)
             if key ~= "PlasticMap_Enabled" then
                 Config[key] = value
             end
@@ -1464,6 +1568,7 @@ local function LoadConfigFromFile()
             Config.BlockedPlayers = {}
         end
         
+        -- Aplicar o céu salvo
         if Config.CurrentSkyId then
             ApplySky(Config.CurrentSkyId)
         end
@@ -1541,6 +1646,259 @@ function ApplySky(skyId)
 end
 
 -- ============================================
+-- INTERFACE AUTH
+-- ============================================
+local AuthSuccess = false
+
+local function CreateAuthUI(callback)
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "SPHXZ_Auth"
+    sg.ResetOnSpawn = false
+    sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    sg.DisplayOrder = 99999
+    
+    local mf = Instance.new("Frame")
+    mf.Size = UDim2.new(0, 400, 0, 280)
+    mf.Position = UDim2.new(0.5, -200, 0.5, -140)
+    mf.BackgroundColor3 = THEME.bg
+    mf.BorderSizePixel = 0
+    mf.ZIndex = 1000
+    mf.Parent = sg
+    
+    local mc = Instance.new("UICorner")
+    mc.CornerRadius = UDim.new(0, 12)
+    mc.Parent = mf
+    
+    local shadow = Instance.new("ImageLabel")
+    shadow.AnchorPoint = Vector2.new(0.5, 0.5)
+    shadow.Position = UDim2.new(0.5, 0, 0.5, 0)
+    shadow.Size = UDim2.new(1, 50, 1, 50)
+    shadow.BackgroundTransparency = 1
+    shadow.Image = "rbxassetid://6014261993"
+    shadow.ImageColor3 = Color3.fromRGB(0, 0, 0)
+    shadow.ImageTransparency = 0.6
+    shadow.ScaleType = Enum.ScaleType.Slice
+    shadow.SliceCenter = Rect.new(49, 49, 450, 450)
+    shadow.ZIndex = 999
+    shadow.Parent = mf
+    
+    for i = 1, 20 do
+        local d = Instance.new("Frame")
+        d.Size = UDim2.new(0, math.random(2, 4), 0, math.random(2, 4))
+        d.Position = UDim2.new(math.random(), 0, math.random(), 0)
+        d.BackgroundColor3 = THEME.primary
+        d.BackgroundTransparency = 0.7
+        d.BorderSizePixel = 0
+        d.ZIndex = 1
+        d.Parent = mf
+    end
+    
+    local hd = Instance.new("Frame")
+    hd.Size = UDim2.new(1, 0, 0, 60)
+    hd.BackgroundColor3 = THEME.surface
+    hd.BorderSizePixel = 0
+    hd.ZIndex = 1001
+    hd.Parent = mf
+    
+    local hdc = Instance.new("UICorner")
+    hdc.CornerRadius = UDim.new(0, 12)
+    hdc.Parent = hd
+    
+    local tl = Instance.new("TextLabel")
+    tl.Size = UDim2.new(1, 0, 1, 0)
+    tl.BackgroundTransparency = 1
+    tl.Text = "AUTENTICACAO"
+    tl.TextColor3 = THEME.accent
+    tl.TextSize = 22
+    tl.Font = Enum.Font.GothamBold
+    tl.ZIndex = 1002
+    tl.Parent = hd
+    
+    local authLabel = Instance.new("TextLabel")
+    authLabel.Size = UDim2.new(0, 100, 0, 25)
+    authLabel.Position = UDim2.new(0.5, -50, 0, 75)
+    authLabel.BackgroundTransparency = 1
+    authLabel.Text = "AUTH"
+    authLabel.TextColor3 = THEME.text
+    authLabel.TextSize = 14
+    authLabel.Font = Enum.Font.GothamBold
+    authLabel.ZIndex = 1001
+    authLabel.Parent = mf
+    
+    local inp = Instance.new("Frame")
+    inp.Size = UDim2.new(0, 340, 0, 50)
+    inp.Position = UDim2.new(0.5, -170, 0, 105)
+    inp.BackgroundColor3 = THEME.surface
+    inp.BorderSizePixel = 0
+    inp.ZIndex = 1001
+    inp.Parent = mf
+    
+    local inpc = Instance.new("UICorner")
+    inpc.CornerRadius = UDim.new(0, 8)
+    inpc.Parent = inp
+    
+    local inps = Instance.new("UIStroke")
+    inps.Color = THEME.primary
+    inps.Thickness = 1
+    inps.Parent = inp
+    
+    local txt = Instance.new("TextBox")
+    txt.Size = UDim2.new(1, -20, 1, 0)
+    txt.Position = UDim2.new(0, 10, 0, 0)
+    txt.BackgroundTransparency = 1
+    txt.PlaceholderText = "SPHXZ-XXXX-XXXX-XXXX"
+    txt.Text = ""
+    txt.TextColor3 = THEME.text
+    txt.PlaceholderColor3 = THEME.textDim
+    txt.TextSize = 18
+    txt.Font = Enum.Font.GothamBold
+    txt.ClearTextOnFocus = false
+    txt.ZIndex = 1002
+    txt.Parent = inp
+    
+    txt:GetPropertyChangedSignal("Text"):Connect(function()
+        if #txt.Text > 20 then
+            txt.Text = txt.Text:sub(1, 20)
+        end
+    end)
+    
+    local rem = Instance.new("Frame")
+    rem.Size = UDim2.new(0, 140, 0, 30)
+    rem.Position = UDim2.new(0.5, -70, 0, 165)
+    rem.BackgroundTransparency = 1
+    rem.ZIndex = 1001
+    rem.Parent = mf
+    
+    local rbox = Instance.new("Frame")
+    rbox.Size = UDim2.new(0, 22, 0, 22)
+    rbox.Position = UDim2.new(0, 0, 0.5, -11)
+    rbox.BackgroundColor3 = THEME.surface
+    rbox.BorderSizePixel = 1
+    rbox.BorderColor3 = THEME.primary
+    rbox.ZIndex = 1002
+    rbox.Parent = rem
+    
+    local rbc = Instance.new("UICorner")
+    rbc.CornerRadius = UDim.new(0, 4)
+    rbc.Parent = rbox
+    
+    local chk = Instance.new("TextLabel")
+    chk.Size = UDim2.new(1, 0, 1, 0)
+    chk.BackgroundTransparency = 1
+    chk.Text = "X"
+    chk.TextColor3 = THEME.accent
+    chk.TextSize = 14
+    chk.Font = Enum.Font.GothamBold
+    chk.Visible = false
+    chk.ZIndex = 1003
+    chk.Parent = rbox
+    
+    local rtl = Instance.new("TextLabel")
+    rtl.Size = UDim2.new(0, 100, 1, 0)
+    rtl.Position = UDim2.new(0, 30, 0, 0)
+    rtl.BackgroundTransparency = 1
+    rtl.Text = "Lembrar-me"
+    rtl.TextColor3 = THEME.textDim
+    rtl.TextSize = 13
+    rtl.Font = Enum.Font.Gotham
+    rtl.TextXAlignment = Enum.TextXAlignment.Left
+    rtl.ZIndex = 1002
+    rtl.Parent = rem
+    
+    local remOn = false
+    rem.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then
+            remOn = not remOn
+            chk.Visible = remOn
+        end
+    end)
+    
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 340, 0, 45)
+    btn.Position = UDim2.new(0.5, -170, 0, 210)
+    btn.BackgroundColor3 = THEME.primary
+    btn.BorderSizePixel = 0
+    btn.Text = "ENTRAR"
+    btn.TextColor3 = THEME.text
+    btn.TextSize = 16
+    btn.Font = Enum.Font.GothamBold
+    btn.ZIndex = 1001
+    btn.Parent = mf
+    
+    local bc = Instance.new("UICorner")
+    bc.CornerRadius = UDim.new(0, 8)
+    bc.Parent = btn
+    
+    local st = Instance.new("TextLabel")
+    st.Size = UDim2.new(1, -20, 0, 25)
+    st.Position = UDim2.new(0, 10, 0, 260)
+    st.BackgroundTransparency = 1
+    st.Text = ""
+    st.TextColor3 = THEME.error
+    st.TextSize = 12
+    st.Font = Enum.Font.GothamBold
+    st.ZIndex = 1001
+    st.Parent = mf
+    
+    btn.MouseEnter:Connect(function()
+        TweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(220, 50, 50)}):Play()
+    end)
+    btn.MouseLeave:Connect(function()
+        TweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = THEME.primary}):Play()
+    end)
+    
+    local function DoLogin()
+        local key = txt.Text
+        if #key < 10 then
+            st.Text = "Insira uma key valida!"
+            return
+        end
+        
+        st.TextColor3 = THEME.textDim
+        st.Text = "Verificando..."
+        
+        local ok, msg = ValidateKey(key)
+        if ok then
+            st.TextColor3 = THEME.success
+            st.Text = "Sucesso! Carregando..."
+            if remOn then SaveCache(key) else ClearCache() end
+            
+            task.delay(1.5, function()
+                AuthSuccess = true
+                sg:Destroy()
+                if callback then callback() end
+            end)
+        else
+            st.TextColor3 = THEME.error
+            st.Text = msg
+            if msg:find("expirada") or msg:find("desativada") then ClearCache() end
+        end
+    end
+    
+    btn.MouseButton1Click:Connect(DoLogin)
+    txt.FocusLost:Connect(function(ep) if ep then DoLogin() end end)
+    
+    local ck = LoadCache()
+    if ck then
+        local ok, msg = ValidateKey(ck)
+        if ok then
+            txt.Text = ck
+            remOn = true
+            chk.Visible = true
+            st.TextColor3 = THEME.success
+            st.Text = "Key salva encontrada!"
+        else
+            ClearCache()
+        end
+    end
+    
+    sg.Parent = LocalPlayer:WaitForChild("PlayerGui")
+    
+    mf.Size = UDim2.new(0, 400, 0, 0)
+    TweenService:Create(mf, TweenInfo.new(0.4, Enum.EasingStyle.Back), {Size = UDim2.new(0, 400, 0, 280)}):Play()
+end
+
+-- ============================================
 -- CRIAR INTERFACE PRINCIPAL
 -- ============================================
 local function CreateMainGUI()
@@ -1551,7 +1909,7 @@ local function CreateMainGUI()
     screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     screenGui.DisplayOrder = 999
     
-    -- BOTÃO MINI (QUADRADO FLUTUANTE)
+    -- BOTÃO MINI (QUADRADO FLUTUANTE) - PARA CELULAR
     miniButton = Instance.new("TextButton")
     miniButton.Name = "MiniButton"
     miniButton.Size = UDim2.new(0, 60, 0, 60)
@@ -1564,12 +1922,22 @@ local function CreateMainGUI()
     miniButton.TextSize = 14
     miniButton.Font = Enum.Font.GothamBold
     miniButton.ZIndex = 1000
-    miniButton.Visible = false
+    miniButton.Visible = false -- Começa invisível
     miniButton.Parent = screenGui
     
     local miniCorner = Instance.new("UICorner")
     miniCorner.CornerRadius = UDim.new(0, 8)
     miniCorner.Parent = miniButton
+    
+    -- IMAGEM DO BOTÃO MINI (opcional)
+    local miniImage = Instance.new("ImageLabel")
+    miniImage.Name = "MiniImage"
+    miniImage.Size = UDim2.new(1, -10, 1, -10)
+    miniImage.Position = UDim2.new(0, 5, 0, 5)
+    miniImage.BackgroundTransparency = 1
+    miniImage.Image = "" -- Deixe vazio ou coloque um ID de imagem
+    miniImage.ZIndex = 1001
+    miniImage.Parent = miniButton
     
     -- PAINEL PRINCIPAL
     mainFrame = Instance.new("Frame")
@@ -1685,7 +2053,7 @@ local function CreateMainGUI()
         return image
     end
     
-    -- ABAS
+    -- ABAS - ORDEM ALTERADA: Misc acima de Config
     local tabEH = Instance.new("TextButton")
     tabEH.Size = UDim2.new(1, 0, 0, 65)
     tabEH.Position = UDim2.new(0, 0, 0, 5)
@@ -1726,6 +2094,7 @@ local function CreateMainGUI()
     tabSkyText.ZIndex = 13
     tabSkyText.Parent = tabSky
     
+    -- MISC agora vem antes de CONFIG
     local tabMisc = Instance.new("TextButton")
     tabMisc.Size = UDim2.new(1, 0, 0, 65)
     tabMisc.Position = UDim2.new(0, 0, 0, 145)
@@ -1746,6 +2115,7 @@ local function CreateMainGUI()
     tabMiscText.ZIndex = 13
     tabMiscText.Parent = tabMisc
     
+    -- CONFIG agora vem depois de MISC
     local tabConfig = Instance.new("TextButton")
     tabConfig.Size = UDim2.new(1, 0, 0, 65)
     tabConfig.Position = UDim2.new(0, 0, 0, 215)
@@ -1985,7 +2355,7 @@ local function CreateMainGUI()
         end
     end)
     
-    -- EH OG Sniper
+    -- EH OG Sniper (INTEGRADO DO PRIMEIRO SCRIPT)
     local ehLabel6 = Instance.new("TextLabel")
     ehLabel6.Size = UDim2.new(0, 150, 0, 35)
     ehLabel6.Position = UDim2.new(0, 15, 0, 315)
@@ -2147,8 +2517,8 @@ local function CreateMainGUI()
     skyTitle.ZIndex = 12
     skyTitle.Parent = contentSky
     
-    -- Lista de céus
-    skyButtons = {}
+    -- Lista de céus - AGORA COM A TABELA INICIALIZADA
+    skyButtons = {} -- LIMPAR E RECRIAR A TABELA
     
     for i, skyData in ipairs(SKY_LIST) do
         local row = math.floor((i - 1) / 2)
@@ -2244,85 +2614,34 @@ local function CreateMainGUI()
     saveConfigBtn.BackgroundColor3 = Color3.fromRGB(150, 0, 0)
     saveConfigBtn.BorderSizePixel = 1
     saveConfigBtn.BorderColor3 = Color3.fromRGB(200, 0, 0)
-    saveConfigBtn.Text = "Salvar Config"
+    saveConfigBtn.Text = "SALVAR CONFIG"
     saveConfigBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
     saveConfigBtn.TextSize = 16
     saveConfigBtn.Font = Enum.Font.GothamBold
     saveConfigBtn.ZIndex = 12
     saveConfigBtn.Parent = contentConfig
     
-    -- Botão Carregar Config
-    local loadConfigBtn = Instance.new("TextButton")
-    loadConfigBtn.Size = UDim2.new(0, 200, 0, 50)
-    loadConfigBtn.Position = UDim2.new(0, 240, 0, 130)
-    loadConfigBtn.BackgroundColor3 = Color3.fromRGB(80, 0, 0)
-    loadConfigBtn.BorderSizePixel = 1
-    loadConfigBtn.BorderColor3 = Color3.fromRGB(200, 0, 0)
-    loadConfigBtn.Text = "Carregar Config"
-    loadConfigBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    loadConfigBtn.TextSize = 16
-    loadConfigBtn.Font = Enum.Font.GothamBold
-    loadConfigBtn.ZIndex = 12
-    loadConfigBtn.Parent = contentConfig
-    
-    -- Status
-    local configStatus = Instance.new("TextLabel")
-    configStatus.Size = UDim2.new(1, -40, 0, 30)
-    configStatus.Position = UDim2.new(0, 20, 0, 200)
-    configStatus.BackgroundTransparency = 1
-    configStatus.Text = ""
-    configStatus.TextColor3 = Color3.fromRGB(0, 255, 100)
-    configStatus.TextSize = 14
-    configStatus.Font = Enum.Font.GothamBold
-    configStatus.ZIndex = 12
-    configStatus.Parent = contentConfig
-    
     saveConfigBtn.MouseButton1Click:Connect(function()
         if SaveConfigToFile() then
-            configStatus.Text = "Config salva com sucesso!"
-            task.delay(3, function()
-                configStatus.Text = ""
-            end)
+            saveConfigBtn.Text = "SALVO!"
+            task.wait(1)
+            saveConfigBtn.Text = "SALVAR CONFIG"
         else
-            configStatus.Text = "Erro ao salvar config!"
-            configStatus.TextColor3 = Color3.fromRGB(255, 50, 50)
-        end
-    end)
-    
-    loadConfigBtn.MouseButton1Click:Connect(function()
-        if LoadConfigFromFile() then
-            configStatus.Text = "Config carregada com sucesso!"
-            configStatus.TextColor3 = Color3.fromRGB(0, 255, 100)
-            UpdateUI()
-            task.delay(3, function()
-                configStatus.Text = ""
-            end)
-        else
-            configStatus.Text = "Erro ao carregar config!"
-            configStatus.TextColor3 = Color3.fromRGB(255, 50, 50)
+            saveConfigBtn.Text = "ERRO!"
+            task.wait(1)
+            saveConfigBtn.Text = "SALVAR CONFIG"
         end
     end)
     
     -- CONTEÚDO MISC
-    local contentMisc = Instance.new("ScrollingFrame")
+    local contentMisc = Instance.new("Frame")
     contentMisc.Size = UDim2.new(1, -85, 1, -35)
     contentMisc.Position = UDim2.new(0, 80, 0, 35)
     contentMisc.BackgroundTransparency = 1
     contentMisc.Visible = false
     contentMisc.ZIndex = 11
-    contentMisc.ScrollBarThickness = 6
-    contentMisc.ScrollBarImageColor3 = Color3.fromRGB(150, 0, 0)
     contentMisc.Parent = mainFrame
     
-    local miscContainer = Instance.new("Frame")
-    miscContainer.Size = UDim2.new(1, 0, 0, 500)
-    miscContainer.BackgroundTransparency = 1
-    miscContainer.ZIndex = 11
-    miscContainer.Parent = contentMisc
-    
-    contentMisc.CanvasSize = UDim2.new(0, 0, 0, 500)
-    
-    -- Título MISC
     local miscTitle = Instance.new("TextLabel")
     miscTitle.Size = UDim2.new(1, -20, 0, 40)
     miscTitle.Position = UDim2.new(0, 10, 0, 10)
@@ -2332,9 +2651,9 @@ local function CreateMainGUI()
     miscTitle.TextSize = 20
     miscTitle.Font = Enum.Font.GothamBold
     miscTitle.ZIndex = 12
-    miscTitle.Parent = miscContainer
+    miscTitle.Parent = contentMisc
     
-    -- Plastic Map Section
+    -- Plastic Map Button
     local plasticMapLabel = Instance.new("TextLabel")
     plasticMapLabel.Size = UDim2.new(0, 200, 0, 35)
     plasticMapLabel.Position = UDim2.new(0, 20, 0, 70)
@@ -2345,11 +2664,10 @@ local function CreateMainGUI()
     plasticMapLabel.Font = Enum.Font.GothamBold
     plasticMapLabel.TextXAlignment = Enum.TextXAlignment.Left
     plasticMapLabel.ZIndex = 12
-    plasticMapLabel.Parent = miscContainer
+    plasticMapLabel.Parent = contentMisc
     
-    -- BOTÃO DE ATIVAÇÃO ÚNICA
     plasticMapBtn = Instance.new("TextButton")
-    plasticMapBtn.Size = UDim2.new(0, 100, 0, 35)
+    plasticMapBtn.Size = UDim2.new(0, 120, 0, 35)
     plasticMapBtn.Position = UDim2.new(0, 240, 0, 70)
     plasticMapBtn.BackgroundColor3 = plasticMapEnabled and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(80, 0, 0)
     plasticMapBtn.BorderSizePixel = 1
@@ -2359,74 +2677,35 @@ local function CreateMainGUI()
     plasticMapBtn.TextSize = 14
     plasticMapBtn.Font = Enum.Font.GothamBold
     plasticMapBtn.ZIndex = 12
-    plasticMapBtn.Parent = miscContainer
+    plasticMapBtn.Parent = contentMisc
     
-    -- Descrição
-    local plasticMapDesc = Instance.new("TextLabel")
-    plasticMapDesc.Size = UDim2.new(1, -40, 0, 40)
-    plasticMapDesc.Position = UDim2.new(0, 20, 0, 120)
-    plasticMapDesc.BackgroundTransparency = 1
-    plasticMapDesc.Text = "Remove texturas do mapa todo para ganho de FPS. Remove grama e otimiza o terreno. Não pode ser desativado após ativar."
-    plasticMapDesc.TextColor3 = Color3.fromRGB(200, 200, 200)
-    plasticMapDesc.TextSize = 12
-    plasticMapDesc.Font = Enum.Font.Gotham
-    plasticMapDesc.TextWrapped = true
-    plasticMapDesc.TextXAlignment = Enum.TextXAlignment.Left
-    plasticMapDesc.ZIndex = 12
-    plasticMapDesc.Parent = miscContainer
+    plasticMapBtn.MouseButton1Click:Connect(function()
+        if not plasticMapEnabled then
+            ApplyPlasticMap()
+        end
+    end)
     
-    -- FUNÇÕES DE TROCA DE ABA
-    local function SwitchTab(tabName)
+    -- FUNÇÕES DAS ABAS
+    local function ShowTab(tabName)
         currentTab = tabName
         
-        -- Resetar cores das abas
-        tabEH.BackgroundColor3 = Color3.fromRGB(60, 0, 0)
-        tabSky.BackgroundColor3 = Color3.fromRGB(60, 0, 0)
-        tabConfig.BackgroundColor3 = Color3.fromRGB(60, 0, 0)
-        tabMisc.BackgroundColor3 = Color3.fromRGB(60, 0, 0)
+        ehScrollFrame.Visible = (tabName == "Emergency Hamburg")
+        contentSky.Visible = (tabName == "Sky")
+        contentConfig.Visible = (tabName == "Config")
+        contentMisc.Visible = (tabName == "Misc")
         
-        -- Esconder todos os conteúdos
-        ehScrollFrame.Visible = false
-        contentSky.Visible = false
-        contentConfig.Visible = false
-        contentMisc.Visible = false
-        
-        -- Mostrar aba selecionada
-        if tabName == "Emergency Hamburg" then
-            tabEH.BackgroundColor3 = Color3.fromRGB(150, 0, 0)
-            ehScrollFrame.Visible = true
-        elseif tabName == "Sky" then
-            tabSky.BackgroundColor3 = Color3.fromRGB(150, 0, 0)
-            contentSky.Visible = true
-        elseif tabName == "Config" then
-            tabConfig.BackgroundColor3 = Color3.fromRGB(150, 0, 0)
-            contentConfig.Visible = true
-        elseif tabName == "MISC" then
-            tabMisc.BackgroundColor3 = Color3.fromRGB(150, 0, 0)
-            contentMisc.Visible = true
-        end
+        tabEH.BackgroundColor3 = (tabName == "Emergency Hamburg") and Color3.fromRGB(150, 0, 0) or Color3.fromRGB(60, 0, 0)
+        tabSky.BackgroundColor3 = (tabName == "Sky") and Color3.fromRGB(150, 0, 0) or Color3.fromRGB(60, 0, 0)
+        tabConfig.BackgroundColor3 = (tabName == "Config") and Color3.fromRGB(150, 0, 0) or Color3.fromRGB(60, 0, 0)
+        tabMisc.BackgroundColor3 = (tabName == "Misc") and Color3.fromRGB(150, 0, 0) or Color3.fromRGB(60, 0, 0)
     end
     
-    -- CONEXÕES DOS BOTÕES
-    tabEH.MouseButton1Click:Connect(function() SwitchTab("Emergency Hamburg") end)
-    tabSky.MouseButton1Click:Connect(function() SwitchTab("Sky") end)
-    tabConfig.MouseButton1Click:Connect(function() SwitchTab("Config") end)
-    tabMisc.MouseButton1Click:Connect(function() SwitchTab("MISC") end)
+    tabEH.MouseButton1Click:Connect(function() ShowTab("Emergency Hamburg") end)
+    tabSky.MouseButton1Click:Connect(function() ShowTab("Sky") end)
+    tabConfig.MouseButton1Click:Connect(function() ShowTab("Config") end)
+    tabMisc.MouseButton1Click:Connect(function() ShowTab("Misc") end)
     
-    -- SISTEMA DE FECHAR/MINIMIZAR
-    closeBtn.MouseButton1Click:Connect(function()
-        mainFrame.Visible = false
-        miniButton.Visible = true
-        PanelOpen = false
-    end)
-    
-    miniButton.MouseButton1Click:Connect(function()
-        mainFrame.Visible = true
-        miniButton.Visible = false
-        PanelOpen = true
-    end)
-    
-    -- Botões EH
+    -- EVENTOS DOS BOTÕES EH
     ehAimbotBtn.MouseButton1Click:Connect(function()
         Config.EH_Enabled = not Config.EH_Enabled
         UpdateUI()
@@ -2482,113 +2761,91 @@ local function CreateMainGUI()
         end)
     end)
     
-    -- Botão Plastic Map (ATIVAÇÃO ÚNICA)
-    plasticMapBtn.MouseButton1Click:Connect(function()
-        if not plasticMapEnabled then
-            ApplyPlasticMap()
-            plasticMapBtn.Text = "ATIVO"
-            plasticMapBtn.BackgroundColor3 = Color3.fromRGB(200, 0, 0)
-            plasticMapBtn.AutoButtonColor = false
-        end
+    -- FECHAR/MINIMIZAR
+    closeBtn.MouseButton1Click:Connect(function()
+        mainFrame.Visible = false
+        miniButton.Visible = true
+        PanelOpen = false
     end)
     
-    -- DRAG DO PAINEL
-    local function StartDrag(input)
+    miniButton.MouseButton1Click:Connect(function()
+        mainFrame.Visible = true
+        miniButton.Visible = false
+        PanelOpen = true
+    end)
+    
+    -- ARRASTAR PAINEL
+    local function UpdateDrag(input)
+        local delta = input.Position - dragStart
+        mainFrame.Position = UDim2.new(dragStartPos.X.Scale, dragStartPos.X.Offset + delta.X, dragStartPos.Y.Scale, dragStartPos.Y.Offset + delta.Y)
+    end
+    
+    titleBar.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
             isDragging = true
             dragStart = input.Position
             dragStartPos = mainFrame.Position
-            
-            if dragConnection then dragConnection:Disconnect() end
-            if dragEndConnection then dragEndConnection:Disconnect() end
-            
-            dragConnection = UserInputService.InputChanged:Connect(function(input2)
-                if input2.UserInputType == Enum.UserInputType.MouseMovement and isDragging then
-                    local delta = input2.Position - dragStart
-                    mainFrame.Position = UDim2.new(
-                        dragStartPos.X.Scale,
-                        dragStartPos.X.Offset + delta.X,
-                        dragStartPos.Y.Scale,
-                        dragStartPos.Y.Offset + delta.Y
-                    )
-                end
-            end)
-            
-            dragEndConnection = UserInputService.InputEnded:Connect(function(input3)
-                if input3.UserInputType == Enum.UserInputType.MouseButton1 then
-                    isDragging = false
-                    if dragConnection then dragConnection:Disconnect() end
-                    if dragEndConnection then dragEndConnection:Disconnect() end
-                end
-            end)
         end
-    end
+    end)
     
-    titleBar.InputBegan:Connect(StartDrag)
-    
-    -- DRAG DO BOTÃO MINI
-    local miniDragging = false
-    local miniDragStart, miniDragStartPos = nil, nil
-    
-    miniButton.InputBegan:Connect(function(input)
+    titleBar.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            miniDragging = true
-            miniDragStart = input.Position
-            miniDragStartPos = miniButton.Position
-            
-            local miniDragConnection = UserInputService.InputChanged:Connect(function(input2)
-                if input2.UserInputType == Enum.UserInputType.MouseMovement and miniDragging then
-                    local delta = input2.Position - miniDragStart
-                    miniButton.Position = UDim2.new(
-                        miniDragStartPos.X.Scale,
-                        miniDragStartPos.X.Offset + delta.X,
-                        miniDragStartPos.Y.Scale,
-                        miniDragStartPos.Y.Offset + delta.Y
-                    )
-                end
-            end)
-            
-            local miniDragEndConnection = UserInputService.InputEnded:Connect(function(input3)
-                if input3.UserInputType == Enum.UserInputType.MouseButton1 then
-                    miniDragging = false
-                    miniDragConnection:Disconnect()
-                    miniDragEndConnection:Disconnect()
-                end
-            end)
+            isDragging = false
         end
     end)
     
-    -- TECLA DE ATALHO
+    UserInputService.InputChanged:Connect(function(input)
+        if isDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            UpdateDrag(input)
+        end
+    end)
+    
+    -- TECLA INTERFACE
     UserInputService.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.Keyboard then
-            local keyName = input.KeyCode.Name
-            if keyName == (Config.InterfaceKey or "Insert") then
-                if mainFrame.Visible then
-                    mainFrame.Visible = false
-                    miniButton.Visible = false
-                    PanelOpen = false
-                else
-                    mainFrame.Visible = true
-                    miniButton.Visible = false
-                    PanelOpen = true
-                end
-            end
+        if input.KeyCode == Enum.KeyCode[Config.InterfaceKey or "Insert"] then
+            mainFrame.Visible = not mainFrame.Visible
+            miniButton.Visible = not mainFrame.Visible
+            PanelOpen = not PanelOpen
         end
     end)
     
-    -- INICIALIZAR
-    UpdateUI()
-    UpdateBlockedPlayersList()
+    -- TECLA AIMBOT
+    UserInputService.InputBegan:Connect(function(input)
+        if input.KeyCode == Enum.KeyCode[Config.EH_Key] and IsInEmergencyHamburg() then
+            Config.EH_Enabled = not Config.EH_Enabled
+            UpdateUI()
+        end
+    end)
     
-    -- Carregar config ao iniciar
+    -- ATUALIZAR LISTA INICIAL
+    UpdateBlockedPlayersList()
+    UpdateUI()
+    
+    -- Carregar config salva
     LoadConfigFromFile()
     
-    print("[SPHXZ] Script carregado com sucesso!")
-    print("[SPHXZ] OG Sniper integrado!")
+    -- Iniciar SpinBot se estiver ativo
+    if Config.EH_SpinBot then
+        StartSpinBot()
+    end
+    
+    -- Iniciar OG Sniper se estiver ativo
+    if Config.EH_OGSniper then
+        ogSniperEnabled = true
+        EnableNoScope()
+        EnableFastSniper()
+    end
+    
+    print("SPHXZ Script carregado com sucesso!")
 end
 
 -- ============================================
--- INICIAR DIRETAMENTE (SEM AUTH)
+-- INICIALIZAÇÃO
 -- ============================================
-print("[SPHXZ] Iniciando script...")
-CreateMainGUI()
+if not AuthSuccess then
+    CreateAuthUI(function()
+        CreateMainGUI()
+    end)
+else
+    CreateMainGUI()
+end
