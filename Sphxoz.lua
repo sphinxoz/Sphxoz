@@ -1,7 +1,7 @@
 -- ============================================
--- SPHXZ AUTH SYSTEM v4.3 + OG SNIPER INTEGRADO
--- OG Sniper otimizado - sem remover chat/mapa
--- Keys compartilháveis entre usuários
+-- SPHXZ AUTH SYSTEM v4.6 + OG SNIPER INTEGRADO
+-- Melhorias: Aimbot Head aprimorado, Filtrar time, Freeze Time CORRIGIDO
+-- KEYS EMBUTIDAS DIRETAMENTE NO SCRIPT
 -- ============================================
 
 local HttpService = game:GetService("HttpService")
@@ -19,6 +19,17 @@ local Terrain = Workspace:FindFirstChildOfClass("Terrain")
 local CONFIG_FILE = "AimbotConfig_Saved.json"
 
 -- ============================================
+-- KEYS VALIDAS (DIRETAMENTE NO SCRIPT)
+-- ============================================
+local VALID_KEYS = {
+    ["SPHXZ-ZK91-LO6C-OC0L"] = true,
+    ["SPHXZ-7PEX-GZIM-EHW1"] = true,
+    ["SPHXZ-CHYY-MWH5-CASW"] = true,
+    ["SPHXZ-HHJO-4AMX-SIJP"] = true,
+    ["SPHXZ-4GZI-FBL6-6ELH"] = true,
+}
+
+-- ============================================
 -- DEFAULT CONFIG
 -- ============================================
 local DEFAULT_CONFIG = {
@@ -31,6 +42,9 @@ local DEFAULT_CONFIG = {
     EH_SpinBot = false,
     EH_SpinSpeed = 100,
     EH_OGSniper = false,
+    EH_TeamFilter = "All",
+    FreezeTime = false,
+    FrozenTime = 12,
     CurrentSkyId = 1,
     BlockedPlayers = {},
     InterfaceKey = "Insert",
@@ -119,7 +133,7 @@ local originalTerrainDecoration = nil
 local plasticMapEnabled = false
 
 -- ============================================
--- VARIAVEIS OG SNIPER (OTIMIZADAS)
+-- VARIAVEIS OG SNIPER
 -- ============================================
 local ogSniperEnabled = false
 local scopeRemovalConnection = nil
@@ -127,6 +141,14 @@ local sniperDelayConnection = nil
 local originalScopes = {}
 local customCrosshair = nil
 local lastSniperCheck = 0
+
+-- ============================================
+-- VARIAVEIS FREEZE TIME
+-- ============================================
+local freezeTimeConnection = nil
+local freezeTimeBtn = nil
+local timeSlider = nil
+local timeLabel = nil
 
 -- ============================================
 -- TEMA
@@ -162,63 +184,21 @@ local function WriteFile(f, d)
     end
 end
 
-local function LoadDB()
-    local d = ReadFile("SPHXZ_KeysDatabase.json")
-    if d then
-        local s, t = pcall(HttpService.JSONDecode, HttpService, d)
-        if s then return t end
-    end
-    return { keys = {} }
-end
-
-local function SaveDB(db)
-    WriteFile("SPHXZ_KeysDatabase.json", HttpService:JSONEncode(db))
-end
-
 local function GetHWID()
     return tostring(LocalPlayer.UserId) .. "-" .. tostring(game.PlaceId)
 end
 
 -- ============================================
--- VALIDACAO DE KEY (COMPARTILHAVEL)
+-- VALIDACAO DE KEY
 -- ============================================
 local function ValidateKey(key)
     key = key:upper():gsub("%s+", "")
-    local db = LoadDB()
-    local dk = db.keys and db.keys[key]
     
-    if dk then
-        if not dk.active then return false, "Key desativada" end
-        if os.time() > dk.expires then return false, "Key expirada" end
-        
-        -- Verificar limite de usos (apenas se maxUses estiver definido e > 0)
-        if dk.maxUses and dk.maxUses > 0 then
-            if dk.useCount and dk.useCount >= dk.maxUses then
-                -- Verifica se este usuário já está na lista de usuários permitidos
-                local userId = tostring(LocalPlayer.UserId)
-                if not dk.allowedUsers or not dk.allowedUsers[userId] then
-                    return false, "Limite de usos atingido"
-                end
-            end
-        end
-        
-        -- Registrar uso apenas se for primeira vez deste usuário
-        local userId = tostring(LocalPlayer.UserId)
-        dk.allowedUsers = dk.allowedUsers or {}
-        
-        if not dk.allowedUsers[userId] then
-            dk.allowedUsers[userId] = true
-            dk.useCount = (dk.useCount or 0) + 1
-            dk.usedBy = LocalPlayer.Name
-            dk.hwid = GetHWID()
-            dk.lastUsed = os.time()
-            SaveDB(db)
-        end
-        
+    if VALID_KEYS[key] then
         return true, "OK"
     end
     
-    return false, "Key invalida"
+    return false, "Key invalida ou nao autorizada"
 end
 
 local function SaveCache(key)
@@ -268,6 +248,9 @@ local function LoadConfig()
             if not result.BlockedPlayers then
                 result.BlockedPlayers = {}
             end
+            if result.EH_OGSniper ~= nil then
+                ogSniperEnabled = result.EH_OGSniper
+            end
             return result
         end
     end
@@ -281,6 +264,10 @@ local Config = getgenv().AimbotConfig
 if not Config.BlockedPlayers then
     Config.BlockedPlayers = {}
 end
+
+if Config.EH_TeamFilter == nil then Config.EH_TeamFilter = "All" end
+if Config.FreezeTime == nil then Config.FreezeTime = false end
+if Config.FrozenTime == nil then Config.FrozenTime = 12 end
 
 -- ============================================
 -- LISTA DE ARMAS DO EH
@@ -298,7 +285,7 @@ local EH_WEAPONS_LIST = {
 -- SISTEMA DE CEUS
 -- ============================================
 local SKY_LIST = {
-    {id = 1, name = "Céu Padrão", skyboxId = nil},
+    {id = 1, name = "Ceu Padrao", skyboxId = nil},
     
     {id = 2, name = "Red Sky", 
         skyboxBk = "rbxassetid://108929045660200",
@@ -346,7 +333,7 @@ local SKY_LIST = {
     }
 }
 
--- Variáveis globais
+-- Variaveis globais
 local originalSky = nil
 local currentSkyObject = nil
 local PanelOpen = true
@@ -354,31 +341,47 @@ local isAiming = false
 local isDragging = false
 local dragStart, dragStartPos, dragConnection, dragEndConnection = nil, nil, nil, nil
 
--- Variáveis da interface
+-- Variaveis da interface
 local mainFrame, miniButton, screenGui
 local currentTab = "Emergency Hamburg"
 
--- Variáveis EH
+-- Variaveis EH
 local ehAimbotBtn, ehAimLockBtn, ehESPBtn, ehESPHealthBtn, ehFriendsModeBtn, ehSpinBotBtn, ehSpinSpeedSlider, ehSpinSpeedLabel, ehOGSniperBtn
+local filterCriminalBtn, filterAllBtn, filterPoliciaBtn
 local espObjects, espHealthObjects, espConnections = {}, {}, {}
 local ehKeyBtn, interfaceKeyBtn, lockedTarget, lockedPart = nil, nil, nil, nil
 
--- Variáveis SpinBot
+-- Variaveis SpinBot
 local spinRunning = false
 local spinAngle = 0
 
--- Variáveis Friends Mode
+-- Variaveis Friends Mode
 local blockedPlayersFrame = nil
 local contentEHScroll = nil
 
--- Variáveis MISC
+-- Variaveis MISC
 local plasticMapBtn = nil
 
--- Variáveis Sky - INICIALIZAR A TABELA AQUI
+-- Variaveis para miniButton draggable
+local miniButtonDragging = false
+local miniButtonDragStart = nil
+local miniButtonStartPos = nil
+local closedByX = false
+
+-- Variaveis Mobile
+local mobileAimbotBtn = nil
+local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+
+-- Variaveis para movimento do painel
+local panelDragging = false
+local panelDragStart = nil
+local panelStartPos = nil
+
+-- Variaveis Sky
 local skyButtons = {}
 
 -- ============================================
--- FUNÇÃO: VERIFICAR SE É POLICIAL
+-- FUNCAO: VERIFICAR SE E POLICIAL
 -- ============================================
 local function IsPolice(player)
     if not player then return false end
@@ -416,7 +419,7 @@ local function IsPolice(player)
 end
 
 -- ============================================
--- FUNÇÃO: VERIFICAR SE JOGADOR TEM ARMA
+-- FUNCAO: VERIFICAR SE JOGADOR TEM ARMA
 -- ============================================
 local function PlayerHasWeapon(player)
     if not player then return false end
@@ -464,7 +467,7 @@ local function PlayerHasWeapon(player)
 end
 
 -- ============================================
--- FUNÇÃO: OBTER COR DO TIME
+-- FUNCAO: OBTER COR DO TIME
 -- ============================================
 local function GetTeamColor(player)
     if not player then return Color3.fromRGB(200, 200, 200) end
@@ -474,7 +477,7 @@ local function GetTeamColor(player)
     end
     
     if PlayerHasWeapon(player) then
-        return Color3.fromRGB(255, 105, 180)
+        return Color3.fromRGB(255, 255, 255)
     end
     
     if player.Team then
@@ -485,7 +488,7 @@ local function GetTeamColor(player)
 end
 
 -- ============================================
--- FUNÇÕES FRIENDS MODE
+-- FUNCOES FRIENDS MODE
 -- ============================================
 local function IsBlockedPlayer(player)
     if not Config.EH_FriendsMode then return false end
@@ -527,7 +530,7 @@ local function RemoveBlockedPlayer(index)
 end
 
 -- ============================================
--- FUNÇÃO: ATUALIZAR LISTA DE BLOQUEADOS
+-- FUNCAO: ATUALIZAR LISTA DE BLOQUEADOS
 -- ============================================
 local function UpdateBlockedPlayersList()
     if not blockedPlayersFrame then return end
@@ -545,7 +548,7 @@ local function UpdateBlockedPlayersList()
         emptyLabel.Size = UDim2.new(1, -10, 0, 30)
         emptyLabel.Position = UDim2.new(0, 5, 0, yPos)
         emptyLabel.BackgroundTransparency = 1
-        emptyLabel.Text = "Nenhum jogador bloqueado"
+        emptyLabel.Text = "Nenhum jogador na whitelist"
         emptyLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
         emptyLabel.TextSize = 12
         emptyLabel.Font = Enum.Font.Gotham
@@ -632,18 +635,14 @@ local function UpdateBlockedPlayersList()
 end
 
 -- ============================================
--- SISTEMA OG SNIPER OTIMIZADO
--- Não remove chat, não remove mapa, não trava
+-- SISTEMA OG SNIPER
 -- ============================================
-
--- Função: No Scope (apenas remove scope da sniper em mãos)
 local function EnableNoScope()
     if scopeRemovalConnection then return end
     
     scopeRemovalConnection = RunService.Heartbeat:Connect(function()
         if not ogSniperEnabled then return end
         
-        -- Verificação otimizada - a cada 0.1 segundos
         local currentTime = tick()
         if currentTime - lastSniperCheck < 0.1 then return end
         lastSniperCheck = currentTime
@@ -651,12 +650,10 @@ local function EnableNoScope()
         local character = LocalPlayer.Character
         if not character then return end
         
-        -- Apenas verifica a tool atual, não percorre todo o jogo
         local tool = character:FindFirstChildOfClass("Tool")
         if tool then
             local toolName = tool.Name:lower()
             if toolName:find("sniper") or toolName:find("barret") or toolName:find("intervention") or toolName:find("awp") then
-                -- Remove apenas atributos de scope da sniper específica
                 pcall(function()
                     tool:SetAttribute("Scope", false)
                     tool:SetAttribute("Scoped", false)
@@ -673,7 +670,6 @@ local function DisableNoScope()
     end
 end
 
--- Função: Fast Sniper (aplica delay apenas na sniper em mãos)
 local function EnableFastSniper()
     if sniperDelayConnection then return end
     
@@ -683,7 +679,6 @@ local function EnableFastSniper()
         local character = LocalPlayer.Character
         if not character then return end
         
-        -- Apenas modifica a sniper atual em mãos
         local tool = character:FindFirstChildOfClass("Tool")
         if tool then
             local toolName = tool.Name:lower()
@@ -705,19 +700,15 @@ local function DisableFastSniper()
     end
 end
 
--- Função: Remover Mira Preta (apenas elementos de scope da sniper, não chat/mapa)
 local function removerMiraPreta()
-    -- Apenas verifica ScreenGui relacionados a sniper/scope
     local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
     if not playerGui then return end
     
-    -- Lista de nomes específicos de GUIs de scope para evitar remover chat/mapa
     local scopeNames = {"sniper", "scope", "scopeframe", "snipergui", "aimscope", "scopeoverlay", "blackscope"}
     
     for _, gui in ipairs(playerGui:GetChildren()) do
         if gui:IsA("ScreenGui") then
             local guiName = gui.Name:lower()
-            -- Só processa GUIs que parecem ser de scope
             local isScopeGui = false
             for _, name in ipairs(scopeNames) do
                 if guiName:find(name) then
@@ -729,8 +720,6 @@ local function removerMiraPreta()
             if isScopeGui then
                 for _, filho in ipairs(gui:GetChildren()) do
                     if filho:IsA("Frame") or filho:IsA("ImageLabel") then
-                        local nome = filho.Name:lower()
-                        -- Apenas esconde elementos pretos grandes que são claramente scopes
                         if filho:IsA("Frame") and filho.BackgroundColor3 == Color3.fromRGB(0, 0, 0) then
                             if filho.Size.X.Scale >= 0.5 and filho.Size.Y.Scale >= 0.5 then
                                 pcall(function()
@@ -745,7 +734,6 @@ local function removerMiraPreta()
     end
 end
 
--- Função: Ativar/Desativar OG Sniper
 local function ToggleOGSniper()
     ogSniperEnabled = not ogSniperEnabled
     Config.EH_OGSniper = ogSniperEnabled
@@ -765,7 +753,55 @@ local function ToggleOGSniper()
 end
 
 -- ============================================
--- SISTEMA PLASTIC MAP (FPS BOOSTER) - CORRIGIDO
+-- SISTEMA FREEZE TIME (CORRIGIDO)
+-- ============================================
+local function EnableFreezeTime()
+    if freezeTimeConnection then return end
+    
+    freezeTimeConnection = RunService.Heartbeat:Connect(function()
+        if Config.FreezeTime then
+            Lighting.ClockTime = Config.FrozenTime
+        end
+    end)
+    
+    -- Aplicar imediatamente
+    if Config.FreezeTime then
+        Lighting.ClockTime = Config.FrozenTime
+    end
+end
+
+local function DisableFreezeTime()
+    if freezeTimeConnection then
+        freezeTimeConnection:Disconnect()
+        freezeTimeConnection = nil
+    end
+end
+
+local function ToggleFreezeTime()
+    Config.FreezeTime = not Config.FreezeTime
+    
+    if Config.FreezeTime then
+        -- Salvar o tempo atual antes de congelar
+        if not Config.FrozenTime or Config.FrozenTime == 0 then
+            Config.FrozenTime = Lighting.ClockTime
+        end
+        EnableFreezeTime()
+        Lighting.ClockTime = Config.FrozenTime
+        print("FREEZE TIME ATIVADO! Hora: " .. tostring(Config.FrozenTime))
+    else
+        DisableFreezeTime()
+        print("FREEZE TIME DESATIVADO!")
+    end
+    
+    if freezeTimeBtn then
+        freezeTimeBtn.Text = Config.FreezeTime and "ON" or "OFF"
+        freezeTimeBtn.BackgroundColor3 = Config.FreezeTime and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(80, 0, 0)
+    end
+    UpdateUI()
+end
+
+-- ============================================
+-- SISTEMA PLASTIC MAP (FPS BOOSTER)
 -- ============================================
 local function SaveOriginalLighting()
     originalLightingSettings = {
@@ -791,22 +827,18 @@ local function ApplyPlasticMap()
     originalMaterials = {}
     originalTextures = {}
     
-    -- Salvar e remover material do Terrain (grama)
     if Terrain then
         originalTerrainMaterial = Terrain.Material
         originalTerrainColor = Terrain.Color
         
-        -- Mudar para material liso e cor cinza
         Terrain.Material = Enum.Material.SmoothPlastic
         Terrain.Color = Color3.fromRGB(100, 100, 100)
         
-        -- Desativar decoração do terrain (grass, etc)
         pcall(function()
             originalTerrainDecoration = Terrain.Decoration
             Terrain.Decoration = false
         end)
         
-        -- Remover grama completamente
         pcall(function()
             Terrain:SetMaterialProperties(Enum.Material.Grass, {
                 Density = 0,
@@ -816,7 +848,6 @@ local function ApplyPlasticMap()
         end)
     end
     
-    -- Processar todo o workspace incluindo terreno
     local function ProcessInstance(instance)
         if instance:IsA("BasePart") then
             originalMaterials[instance] = instance.Material
@@ -847,14 +878,12 @@ local function ApplyPlasticMap()
         end
     end
     
-    -- Processar todos os descendentes do Workspace
     for _, obj in ipairs(Workspace:GetDescendants()) do
         pcall(function()
             ProcessInstance(obj)
         end)
     end
     
-    -- Configurar Lighting para máximo FPS
     Lighting.Ambient = Color3.fromRGB(255, 255, 255)
     Lighting.Brightness = 2
     Lighting.ColorShift_Bottom = Color3.fromRGB(255, 255, 255)
@@ -879,7 +908,6 @@ local function ApplyPlasticMap()
         end
     end
     
-    -- Aplicar flags
     pcall(function()
         for flag, value in pairs(PLASTIC_FLAGS) do
             local numValue = tonumber(value)
@@ -893,7 +921,6 @@ local function ApplyPlasticMap()
     
     plasticMapEnabled = true
     
-    -- Atualizar UI
     if plasticMapBtn then
         plasticMapBtn.Text = "ATIVO"
         plasticMapBtn.BackgroundColor3 = Color3.fromRGB(200, 0, 0)
@@ -901,7 +928,7 @@ local function ApplyPlasticMap()
 end
 
 -- ============================================
--- FUNÇÃO: ATUALIZAR INTERFACE
+-- FUNCAO: ATUALIZAR INTERFACE
 -- ============================================
 function UpdateUI()
     if ehAimbotBtn then
@@ -944,15 +971,38 @@ function UpdateUI()
         ehOGSniperBtn.BackgroundColor3 = ogSniperEnabled and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(80, 0, 0)
     end
     
-    -- Atualizar botões do céu
-    for i, btnData in ipairs(skyButtons) do
-        if btnData and btnData.button then
-            if btnData.skyId == Config.CurrentSkyId then
-                btnData.button.BackgroundColor3 = Color3.fromRGB(200, 0, 0)
-                btnData.button.Text = "✓ " .. btnData.skyName
-            else
-                btnData.button.BackgroundColor3 = Color3.fromRGB(80, 0, 0)
-                btnData.button.Text = btnData.skyName
+    -- BOTOES DE FILTRO ATUALIZADOS
+    if filterCriminalBtn then
+        filterCriminalBtn.BackgroundColor3 = Config.EH_TeamFilter == "Criminal" and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(80, 0, 0)
+    end
+    if filterAllBtn then
+        filterAllBtn.BackgroundColor3 = Config.EH_TeamFilter == "All" and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(80, 0, 0)
+    end
+    if filterPoliciaBtn then
+        filterPoliciaBtn.BackgroundColor3 = Config.EH_TeamFilter == "Policia" and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(80, 0, 0)
+    end
+    
+    if freezeTimeBtn then
+        freezeTimeBtn.Text = Config.FreezeTime and "ON" or "OFF"
+        freezeTimeBtn.BackgroundColor3 = Config.FreezeTime and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(80, 0, 0)
+    end
+    if timeLabel then
+        timeLabel.Text = "Hora: " .. string.format("%.1f", Config.FrozenTime)
+    end
+    if timeSlider then
+        timeSlider.Size = UDim2.new(Config.FrozenTime / 24, 0, 1, 0)
+    end
+    
+    if skyButtons and type(skyButtons) == "table" then
+        for i, btnData in ipairs(skyButtons) do
+            if btnData and btnData.button then
+                if btnData.skyId == Config.CurrentSkyId then
+                    btnData.button.BackgroundColor3 = Color3.fromRGB(200, 0, 0)
+                    btnData.button.Text = "✓ " .. btnData.skyName
+                else
+                    btnData.button.BackgroundColor3 = Color3.fromRGB(80, 0, 0)
+                    btnData.button.Text = btnData.skyName
+                end
             end
         end
     end
@@ -961,7 +1011,7 @@ function UpdateUI()
 end
 
 -- ============================================
--- FUNÇÕES SPINBOT
+-- FUNCOES SPINBOT
 -- ============================================
 local function SpinBotLoop()
     while spinRunning and Config.EH_SpinBot do
@@ -1005,7 +1055,7 @@ local function ToggleSpinBot()
 end
 
 -- ============================================
--- FUNÇÕES EMERGENCY HAMBURG
+-- FUNCOES EMERGENCY HAMBURG
 -- ============================================
 local function IsInEmergencyHamburg()
     return game.PlaceId == 7711635737
@@ -1030,7 +1080,7 @@ local function IsEHWeapon(tool)
 end
 
 -- ============================================
--- FUNÇÃO: IsValidTarget
+-- FUNCAO: IsValidTarget (COM FILTRO DE TIME CORRIGIDO)
 -- ============================================
 local function IsValidTarget(player)
     if not player then return false end
@@ -1047,8 +1097,21 @@ local function IsValidTarget(player)
     local humanoid = player.Character:FindFirstChild("Humanoid")
     if not humanoid then return false end
     
+    if humanoid.Health <= 35 then return false end
+    
     if humanoid.Health <= 0 then return false end
     if humanoid:GetState() == Enum.HumanoidStateType.Dead then return false end
+    
+    -- FILTRO DE TIME CORRIGIDO:
+    -- POLICIA = apenas time azul
+    -- ALL = Armed (branco) + Civis (cinza) + Policia (azul)
+    -- CRIMINAL = Armed (branco) + Civis (cinza) [TUDO QUE NAO E POLICIA]
+    if Config.EH_TeamFilter == "Policia" then
+        if not IsPolice(player) then return false end
+    elseif Config.EH_TeamFilter == "Criminal" then
+        if IsPolice(player) then return false end
+    end
+    -- "All" permite todos
     
     local head = player.Character:FindFirstChild("Head")
     if not head then return false end
@@ -1059,25 +1122,35 @@ local function IsValidTarget(player)
     return true
 end
 
+-- ============================================
+-- FUNCAO: GetBestTargetPart (MELHORADA PARA HEAD)
+-- ============================================
 local function GetBestTargetPart(player)
     if not player or not player.Character then return nil end
     
     local humanoid = player.Character:FindFirstChild("Humanoid")
     if not humanoid or humanoid.Health <= 0 then return nil end
     
+    if humanoid.Health <= 35 then return nil end
+    
     local character = player.Character
     local targetPart = nil
     
     if Config.EH_AimPart == "Head" then
         targetPart = character:FindFirstChild("Head")
+        if targetPart then
+            local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+            if onScreen then
+                return targetPart
+            end
+        end
     else
         targetPart = character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
-    end
-    
-    if targetPart then
-        local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
-        if onScreen then
-            return targetPart
+        if targetPart then
+            local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+            if onScreen then
+                return targetPart
+            end
         end
     end
     
@@ -1097,6 +1170,9 @@ local function GetBestTargetPart(player)
     return nil
 end
 
+-- ============================================
+-- FUNCAO: GetTargetVelocity
+-- ============================================
 local function GetTargetVelocity(player)
     if not player or not player.Character then return Vector3.new() end
     local character = player.Character
@@ -1105,6 +1181,18 @@ local function GetTargetVelocity(player)
     local humanoid = character:FindFirstChild("Humanoid")
     if humanoid then
         velocity = humanoid.MoveDirection
+        
+        local rootPart = character:FindFirstChild("HumanoidRootPart")
+        if rootPart then
+            local yVelocity = rootPart.Velocity.Y
+            
+            if yVelocity > 2 then
+                velocity = velocity + Vector3.new(0, yVelocity * 0.5, 0)
+            elseif yVelocity < -2 then
+                velocity = velocity + Vector3.new(0, yVelocity * 0.3, 0)
+            end
+        end
+        
         if velocity.Magnitude > 0.1 then
             return velocity
         end
@@ -1121,10 +1209,13 @@ local function GetTargetVelocity(player)
 end
 
 -- ============================================
--- LOOP EMERGENCY HAMBURG
+-- LOOP EMERGENCY HAMBURG MELHORADO
 -- ============================================
 local lastCheck = 0
-RunService.RenderStepped:Connect(function()
+local targetVelocitySmooth = Vector3.new()
+local aimSmoothing = 0.15
+
+RunService.RenderStepped:Connect(function(deltaTime)
     if not Config.EH_Enabled then return end
     if not IsInEmergencyHamburg() then return end
     if PanelOpen then return end
@@ -1134,11 +1225,9 @@ RunService.RenderStepped:Connect(function()
     
     local tool = character:FindFirstChildOfClass("Tool")
     
-    -- OG Sniper otimizado - verificação leve
     if ogSniperEnabled and tool then
         local toolName = tool.Name:lower()
         if toolName:find("sniper") or toolName:find("barret") or toolName:find("intervention") then
-            -- Apenas chama remover mira preta ocasionalmente (a cada 1 segundo)
             if tick() % 1 < 0.05 then
                 removerMiraPreta()
             end
@@ -1151,7 +1240,13 @@ RunService.RenderStepped:Connect(function()
         return 
     end
     
-    local isPressed = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+    local isPressed = false
+    if isMobile then
+        isPressed = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) or 
+                   (mobileAimbotBtn and mobileAimbotBtn.BackgroundColor3 == Color3.fromRGB(200, 0, 0))
+    else
+        isPressed = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+    end
     
     if not isPressed then
         lockedTarget = nil
@@ -1164,23 +1259,46 @@ RunService.RenderStepped:Connect(function()
             local screenPos, onScreen = Camera:WorldToViewportPoint(lockedPart.Position)
             if onScreen then
                 local mousePos2 = UserInputService:GetMouseLocation()
-                local smoothFactor = 3.0 / 10
                 
                 local leadX, leadY = 0, 0
                 local velocity = GetTargetVelocity(lockedTarget)
                 local magnitude = (velocity * Vector3.new(1, 0, 1)).Magnitude
                 local distance = (lockedPart.Position - Camera.CFrame.Position).Magnitude
                 
-                local leadFactor = 0.01 + (0.02 * (1 - math.min(distance / 300, 1)))
-                leadFactor = math.max(leadFactor, 0.005)
+                local leadFactor = 0.012
+                if Config.EH_AimPart == "Head" then
+                    leadFactor = 0.006 + (0.010 * (1 - math.min(distance / 200, 1)))
+                    leadFactor = math.clamp(leadFactor, 0.004, 0.018)
+                    
+                    if velocity.Y > 0.5 then
+                        leadFactor = leadFactor * 1.4
+                    end
+                else
+                    leadFactor = 0.015 + (0.020 * (1 - math.min(distance / 300, 1)))
+                    leadFactor = math.clamp(leadFactor, 0.008, 0.030)
+                end
                 
-                if magnitude > 0.3 then
-                    local worldVelocity = velocity * distance * leadFactor
+                targetVelocitySmooth = targetVelocitySmooth:Lerp(velocity, 0.3)
+                
+                if magnitude > 0.1 or velocity.Y > 0.5 then
+                    local worldVelocity = targetVelocitySmooth * distance * leadFactor
                     local screenVelocity, onScreen2 = Camera:WorldToViewportPoint(lockedPart.Position + worldVelocity)
+                    
                     if onScreen2 then
                         leadX = (screenVelocity.X - screenPos.X)
                         leadY = (screenVelocity.Y - screenPos.Y)
+                        
+                        if Config.EH_AimPart == "Head" then
+                            local maxLead = 30
+                            leadX = math.clamp(leadX, -maxLead, maxLead)
+                            leadY = math.clamp(leadY, -maxLead, maxLead)
+                        end
                     end
+                end
+                
+                local smoothFactor = 0.30
+                if Config.EH_AimPart == "Head" then
+                    smoothFactor = 0.35
                 end
                 
                 local x = (screenPos.X - mousePos2.X + leadX) * smoothFactor
@@ -1215,7 +1333,13 @@ RunService.RenderStepped:Connect(function()
                 if onScreen then
                     local mag = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
                     local dist3D = (part.Position - Camera.CFrame.Position).Magnitude
-                    local score = mag + (dist3D / 8)
+                    
+                    local score = mag + (dist3D / 10)
+                    
+                    if Config.EH_AimPart == "Head" and part.Name == "Head" then
+                        score = score * 0.6
+                    end
+                    
                     if score < closestScore then
                         closestScore = score
                         closestPart = part
@@ -1233,27 +1357,10 @@ RunService.RenderStepped:Connect(function()
         local screenPos, onScreen = Camera:WorldToViewportPoint(closestPart.Position)
         if onScreen then
             local mousePos2 = UserInputService:GetMouseLocation()
-            local smoothFactor = 3.0 / 10
+            local smoothFactor = Config.EH_AimPart == "Head" and 0.40 or 0.35
             
-            local leadX, leadY = 0, 0
-            local velocity = GetTargetVelocity(closestPlayer)
-            local magnitude = (velocity * Vector3.new(1, 0, 1)).Magnitude
-            local distance = (closestPart.Position - Camera.CFrame.Position).Magnitude
-            
-            local leadFactor = 0.01 + (0.02 * (1 - math.min(distance / 300, 1)))
-            leadFactor = math.max(leadFactor, 0.005)
-            
-            if magnitude > 0.3 then
-                local worldVelocity = velocity * distance * leadFactor
-                local screenVelocity, onScreen2 = Camera:WorldToViewportPoint(closestPart.Position + worldVelocity)
-                if onScreen2 then
-                    leadX = (screenVelocity.X - screenPos.X)
-                    leadY = (screenVelocity.Y - screenPos.Y)
-                end
-            end
-            
-            local x = (screenPos.X - mousePos2.X + leadX) * smoothFactor
-            local y = (screenPos.Y - mousePos2.Y + leadY) * smoothFactor
+            local x = (screenPos.X - mousePos2.X) * smoothFactor
+            local y = (screenPos.Y - mousePos2.Y) * smoothFactor
             
             if mousemoverel then
                 mousemoverel(x, y)
@@ -1522,18 +1629,19 @@ coroutine.wrap(function()
 end)()
 
 -- ============================================
--- SISTEMA DE SAVE/LOAD (CORRIGIDO PARA INCLUIR CEU)
+-- SISTEMA DE SAVE/LOAD
 -- ============================================
 local function SaveConfigToFile()
     if typeof(writefile) ~= "function" then
         return false
     end
     
-    -- NÃO salvar o estado do Plastic Map (conforme solicitado)
     local configToSave = {}
     for key, value in pairs(Config) do
         configToSave[key] = value
     end
+    
+    configToSave.EH_OGSniper = ogSniperEnabled
     
     local success, err = pcall(function()
         local configData = HttpService:JSONEncode(configToSave)
@@ -1559,7 +1667,6 @@ local function LoadConfigFromFile()
     
     if success and result then
         for key, value in pairs(result) do
-            -- Não carregar PlasticMap_Enabled (conforme solicitado)
             if key ~= "PlasticMap_Enabled" then
                 Config[key] = value
             end
@@ -1568,7 +1675,14 @@ local function LoadConfigFromFile()
             Config.BlockedPlayers = {}
         end
         
-        -- Aplicar o céu salvo
+        if Config.EH_TeamFilter == nil then Config.EH_TeamFilter = "All" end
+        if Config.FreezeTime == nil then Config.FreezeTime = false end
+        if Config.FrozenTime == nil then Config.FrozenTime = 12 end
+        
+        if result.EH_OGSniper ~= nil then
+            ogSniperEnabled = result.EH_OGSniper
+        end
+        
         if Config.CurrentSkyId then
             ApplySky(Config.CurrentSkyId)
         end
@@ -1580,7 +1694,7 @@ local function LoadConfigFromFile()
 end
 
 -- ============================================
--- FUNÇÕES SKY
+-- FUNCOES SKY
 -- ============================================
 local function SaveOriginalSky()
     if not originalSky then
@@ -1643,6 +1757,10 @@ function ApplySky(skyId)
     end
     
     Config.CurrentSkyId = skyId
+    
+    if Config.FreezeTime then
+        Lighting.ClockTime = Config.FrozenTime
+    end
 end
 
 -- ============================================
@@ -1901,6 +2019,7 @@ end
 -- ============================================
 -- CRIAR INTERFACE PRINCIPAL
 -- ============================================
+
 local function CreateMainGUI()
     screenGui = Instance.new("ScreenGui")
     screenGui.Name = "AimbotGUI"
@@ -1909,7 +2028,7 @@ local function CreateMainGUI()
     screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     screenGui.DisplayOrder = 999
     
-    -- BOTÃO MINI (QUADRADO FLUTUANTE) - PARA CELULAR
+    -- BOTAO MINI
     miniButton = Instance.new("TextButton")
     miniButton.Name = "MiniButton"
     miniButton.Size = UDim2.new(0, 60, 0, 60)
@@ -1922,22 +2041,74 @@ local function CreateMainGUI()
     miniButton.TextSize = 14
     miniButton.Font = Enum.Font.GothamBold
     miniButton.ZIndex = 1000
-    miniButton.Visible = false -- Começa invisível
+    miniButton.Visible = false
     miniButton.Parent = screenGui
     
     local miniCorner = Instance.new("UICorner")
     miniCorner.CornerRadius = UDim.new(0, 8)
     miniCorner.Parent = miniButton
     
-    -- IMAGEM DO BOTÃO MINI (opcional)
-    local miniImage = Instance.new("ImageLabel")
-    miniImage.Name = "MiniImage"
-    miniImage.Size = UDim2.new(1, -10, 1, -10)
-    miniImage.Position = UDim2.new(0, 5, 0, 5)
-    miniImage.BackgroundTransparency = 1
-    miniImage.Image = "" -- Deixe vazio ou coloque um ID de imagem
-    miniImage.ZIndex = 1001
-    miniImage.Parent = miniButton
+    -- SISTEMA DE ARRASTAR MINI BOTAO
+    local function UpdateMiniDrag(input)
+        local delta = input.Position - miniButtonDragStart
+        miniButton.Position = UDim2.new(miniButtonStartPos.X.Scale, miniButtonStartPos.X.Offset + delta.X, 
+                                        miniButtonStartPos.Y.Scale, miniButtonStartPos.Y.Offset + delta.Y)
+    end
+    
+    miniButton.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            miniButtonDragging = true
+            miniButtonDragStart = input.Position
+            miniButtonStartPos = miniButton.Position
+            
+            if mainFrame.Visible then
+                mainFrame.Visible = false
+                miniButton.Visible = true
+                PanelOpen = false
+            end
+        end
+    end)
+    
+    miniButton.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            miniButtonDragging = false
+        end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if miniButtonDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            UpdateMiniDrag(input)
+        end
+    end)
+    
+    -- BOTAO MOBILE
+    if isMobile then
+        mobileAimbotBtn = Instance.new("TextButton")
+        mobileAimbotBtn.Name = "MobileAimbotBtn"
+        mobileAimbotBtn.Size = UDim2.new(0, 80, 0, 80)
+        mobileAimbotBtn.Position = UDim2.new(1, -90, 0.5, -40)
+        mobileAimbotBtn.BackgroundColor3 = Color3.fromRGB(80, 0, 0)
+        mobileAimbotBtn.BorderSizePixel = 2
+        mobileAimbotBtn.BorderColor3 = Color3.fromRGB(200, 0, 0)
+        mobileAimbotBtn.Text = "AIM"
+        mobileAimbotBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        mobileAimbotBtn.TextSize = 16
+        mobileAimbotBtn.Font = Enum.Font.GothamBold
+        mobileAimbotBtn.ZIndex = 1000
+        mobileAimbotBtn.Parent = screenGui
+        
+        local mobileCorner = Instance.new("UICorner")
+        mobileCorner.CornerRadius = UDim.new(1, 0)
+        mobileCorner.Parent = mobileAimbotBtn
+        
+        mobileAimbotBtn.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.Touch then
+                Config.EH_Enabled = not Config.EH_Enabled
+                mobileAimbotBtn.BackgroundColor3 = Config.EH_Enabled and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(80, 0, 0)
+                UpdateUI()
+            end
+        end)
+    end
     
     -- PAINEL PRINCIPAL
     mainFrame = Instance.new("Frame")
@@ -1981,8 +2152,9 @@ local function CreateMainGUI()
         dotCorner.Parent = dot
     end
     
-    -- Barra de título
+    -- Barra de titulo (ARRASTAVEL)
     local titleBar = Instance.new("Frame")
+    titleBar.Name = "TitleBar"
     titleBar.Size = UDim2.new(1, 0, 0, 35)
     titleBar.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
     titleBar.BorderSizePixel = 0
@@ -2011,6 +2183,33 @@ local function CreateMainGUI()
     closeBtn.Font = Enum.Font.GothamBold
     closeBtn.ZIndex = 12
     closeBtn.Parent = titleBar
+    
+    -- SISTEMA DE ARRASTAR O PAINEL
+    titleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            panelDragging = true
+            panelDragStart = input.Position
+            panelStartPos = mainFrame.Position
+        end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if panelDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - panelDragStart
+            mainFrame.Position = UDim2.new(
+                panelStartPos.X.Scale,
+                panelStartPos.X.Offset + delta.X,
+                panelStartPos.Y.Scale,
+                panelStartPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+    
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            panelDragging = false
+        end
+    end)
     
     -- Frame das abas
     local tabFrame = Instance.new("Frame")
@@ -2053,7 +2252,7 @@ local function CreateMainGUI()
         return image
     end
     
-    -- ABAS - ORDEM ALTERADA: Misc acima de Config
+    -- ABAS
     local tabEH = Instance.new("TextButton")
     tabEH.Size = UDim2.new(1, 0, 0, 65)
     tabEH.Position = UDim2.new(0, 0, 0, 5)
@@ -2062,7 +2261,9 @@ local function CreateMainGUI()
     tabEH.Text = ""
     tabEH.ZIndex = 12
     tabEH.Parent = tabFrame
-    CreateImageLabel(tabEH, IMAGE_EH, UDim2.new(0.5, -18, 0, 8), UDim2.new(0, 36, 0, 30))
+    
+    local ehImage = CreateImageLabel(tabEH, IMAGE_EH, UDim2.new(0.5, -16, 0, 8), UDim2.new(0, 32, 0, 32))
+    
     local tabEHText = Instance.new("TextLabel")
     tabEHText.Size = UDim2.new(1, 0, 0, 20)
     tabEHText.Position = UDim2.new(0, 0, 0, 44)
@@ -2094,7 +2295,6 @@ local function CreateMainGUI()
     tabSkyText.ZIndex = 13
     tabSkyText.Parent = tabSky
     
-    -- MISC agora vem antes de CONFIG
     local tabMisc = Instance.new("TextButton")
     tabMisc.Size = UDim2.new(1, 0, 0, 65)
     tabMisc.Position = UDim2.new(0, 0, 0, 145)
@@ -2115,7 +2315,6 @@ local function CreateMainGUI()
     tabMiscText.ZIndex = 13
     tabMiscText.Parent = tabMisc
     
-    -- CONFIG agora vem depois de MISC
     local tabConfig = Instance.new("TextButton")
     tabConfig.Size = UDim2.new(1, 0, 0, 65)
     tabConfig.Position = UDim2.new(0, 0, 0, 215)
@@ -2136,7 +2335,7 @@ local function CreateMainGUI()
     tabConfigText.ZIndex = 13
     tabConfigText.Parent = tabConfig
     
-    -- CONTEÚDO EH COM SCROLL
+    -- CONTEUDO EH COM SCROLL
     local ehScrollFrame = Instance.new("ScrollingFrame")
     ehScrollFrame.Size = UDim2.new(1, -85, 1, -35)
     ehScrollFrame.Position = UDim2.new(0, 80, 0, 35)
@@ -2149,12 +2348,12 @@ local function CreateMainGUI()
     contentEHScroll = ehScrollFrame
     
     local contentEH = Instance.new("Frame")
-    contentEH.Size = UDim2.new(1, 0, 0, 900)
+    contentEH.Size = UDim2.new(1, 0, 0, 1100)
     contentEH.BackgroundTransparency = 1
     contentEH.ZIndex = 11
     contentEH.Parent = ehScrollFrame
     
-    ehScrollFrame.CanvasSize = UDim2.new(0, 0, 0, 900)
+    ehScrollFrame.CanvasSize = UDim2.new(0, 0, 0, 1100)
     
     -- EH Aimbot
     local ehLabel1 = Instance.new("TextLabel")
@@ -2182,10 +2381,72 @@ local function CreateMainGUI()
     ehAimbotBtn.ZIndex = 12
     ehAimbotBtn.Parent = contentEH
     
+    -- BOTOES DE FILTRO DE TIME (POSIÇÃO CORRIGIDA - MAIS ABAIXO)
+    -- Botao Criminal
+    filterCriminalBtn = Instance.new("TextButton")
+    filterCriminalBtn.Size = UDim2.new(0, 100, 0, 35)
+    filterCriminalBtn.Position = UDim2.new(0, 15, 0, 70)
+    filterCriminalBtn.BackgroundColor3 = Config.EH_TeamFilter == "Criminal" and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(80, 0, 0)
+    filterCriminalBtn.BorderSizePixel = 1
+    filterCriminalBtn.BorderColor3 = Color3.fromRGB(200, 0, 0)
+    filterCriminalBtn.Text = "CRIMINAL"
+    filterCriminalBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    filterCriminalBtn.TextSize = 12
+    filterCriminalBtn.Font = Enum.Font.GothamBold
+    filterCriminalBtn.ZIndex = 12
+    filterCriminalBtn.Parent = contentEH
+    
+    -- Botao Todos
+    filterAllBtn = Instance.new("TextButton")
+    filterAllBtn.Size = UDim2.new(0, 100, 0, 35)
+    filterAllBtn.Position = UDim2.new(0, 125, 0, 70)
+    filterAllBtn.BackgroundColor3 = Config.EH_TeamFilter == "All" and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(80, 0, 0)
+    filterAllBtn.BorderSizePixel = 1
+    filterAllBtn.BorderColor3 = Color3.fromRGB(200, 0, 0)
+    filterAllBtn.Text = "TODOS"
+    filterAllBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    filterAllBtn.TextSize = 12
+    filterAllBtn.Font = Enum.Font.GothamBold
+    filterAllBtn.ZIndex = 12
+    filterAllBtn.Parent = contentEH
+    
+    -- Botao Policia
+    filterPoliciaBtn = Instance.new("TextButton")
+    filterPoliciaBtn.Size = UDim2.new(0, 100, 0, 35)
+    filterPoliciaBtn.Position = UDim2.new(0, 235, 0, 70)
+    filterPoliciaBtn.BackgroundColor3 = Config.EH_TeamFilter == "Policia" and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(80, 0, 0)
+    filterPoliciaBtn.BorderSizePixel = 1
+    filterPoliciaBtn.BorderColor3 = Color3.fromRGB(200, 0, 0)
+    filterPoliciaBtn.Text = "POLICIA"
+    filterPoliciaBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    filterPoliciaBtn.TextSize = 12
+    filterPoliciaBtn.Font = Enum.Font.GothamBold
+    filterPoliciaBtn.ZIndex = 12
+    filterPoliciaBtn.Parent = contentEH
+    
+    -- Eventos dos botoes de filtro (ATUALIZAM A INTERFACE)
+    filterCriminalBtn.MouseButton1Click:Connect(function()
+        Config.EH_TeamFilter = "Criminal"
+        UpdateUI()
+        SaveConfigToFile()
+    end)
+    
+    filterAllBtn.MouseButton1Click:Connect(function()
+        Config.EH_TeamFilter = "All"
+        UpdateUI()
+        SaveConfigToFile()
+    end)
+    
+    filterPoliciaBtn.MouseButton1Click:Connect(function()
+        Config.EH_TeamFilter = "Policia"
+        UpdateUI()
+        SaveConfigToFile()
+    end)
+    
     -- EH Aim Lock
     local ehLabel2 = Instance.new("TextLabel")
     ehLabel2.Size = UDim2.new(0, 150, 0, 35)
-    ehLabel2.Position = UDim2.new(0, 15, 0, 65)
+    ehLabel2.Position = UDim2.new(0, 15, 0, 120)
     ehLabel2.BackgroundTransparency = 1
     ehLabel2.Text = "Aim Lock"
     ehLabel2.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -2197,7 +2458,7 @@ local function CreateMainGUI()
     
     ehAimLockBtn = Instance.new("TextButton")
     ehAimLockBtn.Size = UDim2.new(0, 100, 0, 35)
-    ehAimLockBtn.Position = UDim2.new(0, 200, 0, 65)
+    ehAimLockBtn.Position = UDim2.new(0, 200, 0, 120)
     ehAimLockBtn.BackgroundColor3 = Color3.fromRGB(80, 0, 0)
     ehAimLockBtn.BorderSizePixel = 1
     ehAimLockBtn.BorderColor3 = Color3.fromRGB(200, 0, 0)
@@ -2211,7 +2472,7 @@ local function CreateMainGUI()
     -- EH ESP
     local ehLabel3 = Instance.new("TextLabel")
     ehLabel3.Size = UDim2.new(0, 150, 0, 35)
-    ehLabel3.Position = UDim2.new(0, 15, 0, 115)
+    ehLabel3.Position = UDim2.new(0, 15, 0, 170)
     ehLabel3.BackgroundTransparency = 1
     ehLabel3.Text = "ESP"
     ehLabel3.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -2223,7 +2484,7 @@ local function CreateMainGUI()
     
     ehESPBtn = Instance.new("TextButton")
     ehESPBtn.Size = UDim2.new(0, 100, 0, 35)
-    ehESPBtn.Position = UDim2.new(0, 200, 0, 115)
+    ehESPBtn.Position = UDim2.new(0, 200, 0, 170)
     ehESPBtn.BackgroundColor3 = Config.EH_ESP and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(80, 0, 0)
     ehESPBtn.BorderSizePixel = 1
     ehESPBtn.BorderColor3 = Color3.fromRGB(200, 0, 0)
@@ -2237,7 +2498,7 @@ local function CreateMainGUI()
     -- EH ESP Health
     local ehLabel4 = Instance.new("TextLabel")
     ehLabel4.Size = UDim2.new(0, 150, 0, 35)
-    ehLabel4.Position = UDim2.new(0, 15, 0, 165)
+    ehLabel4.Position = UDim2.new(0, 15, 0, 220)
     ehLabel4.BackgroundTransparency = 1
     ehLabel4.Text = "ESP Health"
     ehLabel4.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -2249,7 +2510,7 @@ local function CreateMainGUI()
     
     ehESPHealthBtn = Instance.new("TextButton")
     ehESPHealthBtn.Size = UDim2.new(0, 100, 0, 35)
-    ehESPHealthBtn.Position = UDim2.new(0, 200, 0, 165)
+    ehESPHealthBtn.Position = UDim2.new(0, 200, 0, 220)
     ehESPHealthBtn.BackgroundColor3 = Config.EH_ESPHealth and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(80, 0, 0)
     ehESPHealthBtn.BorderSizePixel = 1
     ehESPHealthBtn.BorderColor3 = Color3.fromRGB(200, 0, 0)
@@ -2263,7 +2524,7 @@ local function CreateMainGUI()
     -- EH SpinBot
     local ehLabel5 = Instance.new("TextLabel")
     ehLabel5.Size = UDim2.new(0, 150, 0, 35)
-    ehLabel5.Position = UDim2.new(0, 15, 0, 215)
+    ehLabel5.Position = UDim2.new(0, 15, 0, 270)
     ehLabel5.BackgroundTransparency = 1
     ehLabel5.Text = "SpinBot"
     ehLabel5.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -2275,7 +2536,7 @@ local function CreateMainGUI()
     
     ehSpinBotBtn = Instance.new("TextButton")
     ehSpinBotBtn.Size = UDim2.new(0, 100, 0, 35)
-    ehSpinBotBtn.Position = UDim2.new(0, 200, 0, 215)
+    ehSpinBotBtn.Position = UDim2.new(0, 200, 0, 270)
     ehSpinBotBtn.BackgroundColor3 = Config.EH_SpinBot and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(80, 0, 0)
     ehSpinBotBtn.BorderSizePixel = 1
     ehSpinBotBtn.BorderColor3 = Color3.fromRGB(200, 0, 0)
@@ -2289,7 +2550,7 @@ local function CreateMainGUI()
     -- Label velocidade SpinBot
     ehSpinSpeedLabel = Instance.new("TextLabel")
     ehSpinSpeedLabel.Size = UDim2.new(0, 150, 0, 25)
-    ehSpinSpeedLabel.Position = UDim2.new(0, 15, 0, 260)
+    ehSpinSpeedLabel.Position = UDim2.new(0, 15, 0, 315)
     ehSpinSpeedLabel.BackgroundTransparency = 1
     ehSpinSpeedLabel.Text = "Velocidade: " .. tostring(Config.EH_SpinSpeed)
     ehSpinSpeedLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -2299,15 +2560,18 @@ local function CreateMainGUI()
     ehSpinSpeedLabel.ZIndex = 12
     ehSpinSpeedLabel.Parent = contentEH
     
-    -- Container do slider
+    -- Container do slider SpinBot
     local sliderContainer = Instance.new("Frame")
     sliderContainer.Size = UDim2.new(0, 200, 0, 10)
-    sliderContainer.Position = UDim2.new(0, 200, 0, 267)
+    sliderContainer.Position = UDim2.new(0, 15, 0, 345)
     sliderContainer.BackgroundColor3 = Color3.fromRGB(40, 0, 0)
-    sliderContainer.BorderSizePixel = 1
-    sliderContainer.BorderColor3 = Color3.fromRGB(200, 0, 0)
+    sliderContainer.BorderSizePixel = 0
     sliderContainer.ZIndex = 12
     sliderContainer.Parent = contentEH
+    
+    local sliderCorner = Instance.new("UICorner")
+    sliderCorner.CornerRadius = UDim.new(0, 5)
+    sliderCorner.Parent = sliderContainer
     
     ehSpinSpeedSlider = Instance.new("Frame")
     ehSpinSpeedSlider.Size = UDim2.new(Config.EH_SpinSpeed / 1000, 0, 1, 0)
@@ -2316,49 +2580,14 @@ local function CreateMainGUI()
     ehSpinSpeedSlider.ZIndex = 13
     ehSpinSpeedSlider.Parent = sliderContainer
     
-    local sliderClickArea = Instance.new("TextButton")
-    sliderClickArea.Size = UDim2.new(1, 0, 1, 0)
-    sliderClickArea.BackgroundTransparency = 1
-    sliderClickArea.Text = ""
-    sliderClickArea.ZIndex = 14
-    sliderClickArea.Parent = sliderContainer
+    local sliderFillCorner = Instance.new("UICorner")
+    sliderFillCorner.CornerRadius = UDim.new(0, 5)
+    sliderFillCorner.Parent = ehSpinSpeedSlider
     
-    local function UpdateSlider(input)
-        local sliderPos = input.Position.X - sliderContainer.AbsolutePosition.X
-        local sliderSize = sliderContainer.AbsoluteSize.X
-        local percentage = math.clamp(sliderPos / sliderSize, 0, 1)
-        local newSpeed = math.floor(percentage * 1000)
-        
-        Config.EH_SpinSpeed = newSpeed
-        ehSpinSpeedSlider.Size = UDim2.new(percentage, 0, 1, 0)
-        ehSpinSpeedLabel.Text = "Velocidade: " .. tostring(newSpeed)
-    end
-    
-    local isDraggingSlider = false
-    
-    sliderClickArea.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            isDraggingSlider = true
-            UpdateSlider(input)
-        end
-    end)
-    
-    sliderClickArea.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            isDraggingSlider = false
-        end
-    end)
-    
-    UserInputService.InputChanged:Connect(function(input)
-        if isDraggingSlider and input.UserInputType == Enum.UserInputType.MouseMovement then
-            UpdateSlider(input)
-        end
-    end)
-    
-    -- EH OG Sniper (INTEGRADO DO PRIMEIRO SCRIPT)
+    -- EH OG Sniper
     local ehLabel6 = Instance.new("TextLabel")
     ehLabel6.Size = UDim2.new(0, 150, 0, 35)
-    ehLabel6.Position = UDim2.new(0, 15, 0, 315)
+    ehLabel6.Position = UDim2.new(0, 15, 0, 375)
     ehLabel6.BackgroundTransparency = 1
     ehLabel6.Text = "OG Sniper"
     ehLabel6.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -2370,7 +2599,7 @@ local function CreateMainGUI()
     
     ehOGSniperBtn = Instance.new("TextButton")
     ehOGSniperBtn.Size = UDim2.new(0, 100, 0, 35)
-    ehOGSniperBtn.Position = UDim2.new(0, 200, 0, 315)
+    ehOGSniperBtn.Position = UDim2.new(0, 200, 0, 375)
     ehOGSniperBtn.BackgroundColor3 = ogSniperEnabled and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(80, 0, 0)
     ehOGSniperBtn.BorderSizePixel = 1
     ehOGSniperBtn.BorderColor3 = Color3.fromRGB(200, 0, 0)
@@ -2381,10 +2610,10 @@ local function CreateMainGUI()
     ehOGSniperBtn.ZIndex = 12
     ehOGSniperBtn.Parent = contentEH
     
-    -- FRIENDS MODE COM LISTA DE BLOQUEADOS
+    -- EH Friends Mode
     local ehLabel7 = Instance.new("TextLabel")
     ehLabel7.Size = UDim2.new(0, 150, 0, 35)
-    ehLabel7.Position = UDim2.new(0, 15, 0, 365)
+    ehLabel7.Position = UDim2.new(0, 15, 0, 425)
     ehLabel7.BackgroundTransparency = 1
     ehLabel7.Text = "Friends Mode"
     ehLabel7.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -2396,7 +2625,7 @@ local function CreateMainGUI()
     
     ehFriendsModeBtn = Instance.new("TextButton")
     ehFriendsModeBtn.Size = UDim2.new(0, 100, 0, 35)
-    ehFriendsModeBtn.Position = UDim2.new(0, 200, 0, 365)
+    ehFriendsModeBtn.Position = UDim2.new(0, 200, 0, 425)
     ehFriendsModeBtn.BackgroundColor3 = Config.EH_FriendsMode and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(80, 0, 0)
     ehFriendsModeBtn.BorderSizePixel = 1
     ehFriendsModeBtn.BorderColor3 = Color3.fromRGB(200, 0, 0)
@@ -2407,184 +2636,295 @@ local function CreateMainGUI()
     ehFriendsModeBtn.ZIndex = 12
     ehFriendsModeBtn.Parent = contentEH
     
-    -- Lista de jogadores bloqueados
+    -- Frame de jogadores bloqueados (WHITELIST)
     local blockedLabel = Instance.new("TextLabel")
-    blockedLabel.Size = UDim2.new(0, 200, 0, 25)
-    blockedLabel.Position = UDim2.new(0, 15, 0, 410)
+    blockedLabel.Size = UDim2.new(0, 200, 0, 30)
+    blockedLabel.Position = UDim2.new(0, 320, 0, 15)
     blockedLabel.BackgroundTransparency = 1
-    blockedLabel.Text = "Jogadores Bloqueados:"
-    blockedLabel.TextColor3 = Color3.fromRGB(200, 50, 50)
-    blockedLabel.TextSize = 14
+    blockedLabel.Text = "WHITELIST"
+    blockedLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    blockedLabel.TextSize = 16
     blockedLabel.Font = Enum.Font.GothamBold
-    blockedLabel.TextXAlignment = Enum.TextXAlignment.Left
     blockedLabel.ZIndex = 12
     blockedLabel.Parent = contentEH
     
-    -- Frame scroll para lista de bloqueados
     blockedPlayersFrame = Instance.new("ScrollingFrame")
-    blockedPlayersFrame.Size = UDim2.new(0, 350, 0, 200)
-    blockedPlayersFrame.Position = UDim2.new(0, 15, 0, 440)
-    blockedPlayersFrame.BackgroundColor3 = Color3.fromRGB(20, 0, 0)
-    blockedPlayersFrame.BackgroundTransparency = 0.5
+    blockedPlayersFrame.Size = UDim2.new(0, 350, 0, 350)
+    blockedPlayersFrame.Position = UDim2.new(0, 320, 0, 50)
+    blockedPlayersFrame.BackgroundColor3 = Color3.fromRGB(10, 0, 0)
     blockedPlayersFrame.BorderSizePixel = 1
     blockedPlayersFrame.BorderColor3 = Color3.fromRGB(150, 0, 0)
+    blockedPlayersFrame.ScrollBarThickness = 4
+    blockedPlayersFrame.ScrollBarImageColor3 = Color3.fromRGB(150, 0, 0)
     blockedPlayersFrame.ZIndex = 13
-    blockedPlayersFrame.ScrollBarThickness = 6
-    blockedPlayersFrame.ScrollBarImageColor3 = Color3.fromRGB(200, 0, 0)
     blockedPlayersFrame.Parent = contentEH
     
+    local blockedCorner = Instance.new("UICorner")
+    blockedCorner.CornerRadius = UDim.new(0, 8)
+    blockedCorner.Parent = blockedPlayersFrame
+    
     -- Input para adicionar jogador
+    local addPlayerFrame = Instance.new("Frame")
+    addPlayerFrame.Size = UDim2.new(0, 350, 0, 40)
+    addPlayerFrame.Position = UDim2.new(0, 320, 0, 410)
+    addPlayerFrame.BackgroundColor3 = Color3.fromRGB(20, 0, 0)
+    addPlayerFrame.BorderSizePixel = 1
+    addPlayerFrame.BorderColor3 = Color3.fromRGB(150, 0, 0)
+    addPlayerFrame.ZIndex = 13
+    addPlayerFrame.Parent = contentEH
+    
+    local addPlayerCorner = Instance.new("UICorner")
+    addPlayerCorner.CornerRadius = UDim.new(0, 8)
+    addPlayerCorner.Parent = addPlayerFrame
+    
     local addPlayerInput = Instance.new("TextBox")
-    addPlayerInput.Size = UDim2.new(0, 250, 0, 30)
-    addPlayerInput.Position = UDim2.new(0, 15, 0, 650)
-    addPlayerInput.BackgroundColor3 = Color3.fromRGB(40, 0, 0)
-    addPlayerInput.BorderSizePixel = 1
-    addPlayerInput.BorderColor3 = Color3.fromRGB(200, 0, 0)
-    addPlayerInput.Text = ""
+    addPlayerInput.Size = UDim2.new(0.7, -10, 1, -10)
+    addPlayerInput.Position = UDim2.new(0, 5, 0, 5)
+    addPlayerInput.BackgroundColor3 = Color3.fromRGB(30, 0, 0)
+    addPlayerInput.BorderSizePixel = 0
     addPlayerInput.PlaceholderText = "Nome do jogador..."
+    addPlayerInput.Text = ""
     addPlayerInput.TextColor3 = Color3.fromRGB(255, 255, 255)
     addPlayerInput.PlaceholderColor3 = Color3.fromRGB(150, 150, 150)
-    addPlayerInput.TextSize = 12
+    addPlayerInput.TextSize = 14
     addPlayerInput.Font = Enum.Font.Gotham
-    addPlayerInput.ZIndex = 12
-    addPlayerInput.Parent = contentEH
+    addPlayerInput.ZIndex = 14
+    addPlayerInput.Parent = addPlayerFrame
     
     local addPlayerBtn = Instance.new("TextButton")
-    addPlayerBtn.Size = UDim2.new(0, 90, 0, 30)
-    addPlayerBtn.Position = UDim2.new(0, 275, 0, 650)
+    addPlayerBtn.Size = UDim2.new(0.3, -10, 1, -10)
+    addPlayerBtn.Position = UDim2.new(0.7, 5, 0, 5)
     addPlayerBtn.BackgroundColor3 = Color3.fromRGB(150, 0, 0)
     addPlayerBtn.BorderSizePixel = 0
     addPlayerBtn.Text = "Bloquear"
     addPlayerBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    addPlayerBtn.TextSize = 12
+    addPlayerBtn.TextSize = 14
     addPlayerBtn.Font = Enum.Font.GothamBold
-    addPlayerBtn.ZIndex = 12
-    addPlayerBtn.Parent = contentEH
+    addPlayerBtn.ZIndex = 14
+    addPlayerBtn.Parent = addPlayerFrame
     
-    addPlayerBtn.MouseButton1Click:Connect(function()
-        local playerName = addPlayerInput.Text
-        if playerName and playerName ~= "" then
-            if AddBlockedPlayer(playerName) then
-                addPlayerInput.Text = ""
-                UpdateBlockedPlayersList()
-            end
-        end
-    end)
-    
-    -- EH Key (Tecla Aimbot)
-    local ehLabel8 = Instance.new("TextLabel")
-    ehLabel8.Size = UDim2.new(0, 150, 0, 35)
-    ehLabel8.Position = UDim2.new(0, 15, 0, 690)
-    ehLabel8.BackgroundTransparency = 1
-    ehLabel8.Text = "Tecla Aimbot"
-    ehLabel8.TextColor3 = Color3.fromRGB(255, 255, 255)
-    ehLabel8.TextSize = 16
-    ehLabel8.Font = Enum.Font.GothamBold
-    ehLabel8.TextXAlignment = Enum.TextXAlignment.Left
-    ehLabel8.ZIndex = 12
-    ehLabel8.Parent = contentEH
-    
-    ehKeyBtn = Instance.new("TextButton")
-    ehKeyBtn.Size = UDim2.new(0, 100, 0, 35)
-    ehKeyBtn.Position = UDim2.new(0, 200, 0, 690)
-    ehKeyBtn.BackgroundColor3 = Color3.fromRGB(80, 0, 0)
-    ehKeyBtn.BorderSizePixel = 1
-    ehKeyBtn.BorderColor3 = Color3.fromRGB(200, 0, 0)
-    ehKeyBtn.Text = Config.EH_Key
-    ehKeyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    ehKeyBtn.TextSize = 14
-    ehKeyBtn.Font = Enum.Font.GothamBold
-    ehKeyBtn.ZIndex = 12
-    ehKeyBtn.Parent = contentEH
-    
-    -- CONTEÚDO SKY
-    local contentSky = Instance.new("Frame")
+    -- CONTEUDO SKY
+    local contentSky = Instance.new("ScrollingFrame")
+    contentSky.Name = "ContentSky"
     contentSky.Size = UDim2.new(1, -85, 1, -35)
     contentSky.Position = UDim2.new(0, 80, 0, 35)
     contentSky.BackgroundTransparency = 1
     contentSky.Visible = false
     contentSky.ZIndex = 11
+    contentSky.ScrollBarThickness = 6
+    contentSky.ScrollBarImageColor3 = Color3.fromRGB(150, 0, 0)
     contentSky.Parent = mainFrame
+    
+    local skyContentFrame = Instance.new("Frame")
+    skyContentFrame.Size = UDim2.new(1, 0, 0, 600)
+    skyContentFrame.BackgroundTransparency = 1
+    skyContentFrame.ZIndex = 11
+    skyContentFrame.Parent = contentSky
+    
+    contentSky.CanvasSize = UDim2.new(0, 0, 0, 600)
     
     local skyTitle = Instance.new("TextLabel")
     skyTitle.Size = UDim2.new(1, -20, 0, 40)
     skyTitle.Position = UDim2.new(0, 10, 0, 10)
     skyTitle.BackgroundTransparency = 1
-    skyTitle.Text = "Selecione o Céu"
+    skyTitle.Text = "Selecione o Ceu"
     skyTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
     skyTitle.TextSize = 20
     skyTitle.Font = Enum.Font.GothamBold
     skyTitle.ZIndex = 12
-    skyTitle.Parent = contentSky
+    skyTitle.Parent = skyContentFrame
     
-    -- Lista de céus - AGORA COM A TABELA INICIALIZADA
-    skyButtons = {} -- LIMPAR E RECRIAR A TABELA
-    
-    for i, skyData in ipairs(SKY_LIST) do
-        local row = math.floor((i - 1) / 2)
-        local col = (i - 1) % 2
+    local yPos = 60
+    for i, sky in ipairs(SKY_LIST) do
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(0, 600, 0, 50)
+        btn.Position = UDim2.new(0.5, -300, 0, yPos)
+        btn.BackgroundColor3 = (Config.CurrentSkyId == sky.id) and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(80, 0, 0)
+        btn.BorderSizePixel = 1
+        btn.BorderColor3 = Color3.fromRGB(200, 0, 0)
+        btn.Text = (Config.CurrentSkyId == sky.id and "✓ " or "") .. sky.name
+        btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        btn.TextSize = 16
+        btn.Font = Enum.Font.GothamBold
+        btn.ZIndex = 12
+        btn.Parent = skyContentFrame
         
-        local skyBtn = Instance.new("TextButton")
-        skyBtn.Size = UDim2.new(0, 280, 0, 50)
-        skyBtn.Position = UDim2.new(0, 20 + col * 300, 0, 70 + row * 60)
-        skyBtn.BackgroundColor3 = (Config.CurrentSkyId == skyData.id) and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(80, 0, 0)
-        skyBtn.BorderSizePixel = 1
-        skyBtn.BorderColor3 = Color3.fromRGB(200, 0, 0)
-        skyBtn.Text = (Config.CurrentSkyId == skyData.id and "✓ " or "") .. skyData.name
-        skyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-        skyBtn.TextSize = 14
-        skyBtn.Font = Enum.Font.GothamBold
-        skyBtn.ZIndex = 12
-        skyBtn.Parent = contentSky
+        table.insert(skyButtons, {button = btn, skyId = sky.id, skyName = sky.name})
         
-        table.insert(skyButtons, {
-            button = skyBtn,
-            skyId = skyData.id,
-            skyName = skyData.name
-        })
-        
-        skyBtn.MouseButton1Click:Connect(function()
-            ApplySky(skyData.id)
+        btn.MouseButton1Click:Connect(function()
+            ApplySky(sky.id)
+            SaveConfigToFile()
             UpdateUI()
         end)
+        
+        yPos = yPos + 60
     end
     
-    -- CONTEÚDO CONFIG
-    local contentConfig = Instance.new("Frame")
+    -- CONTEUDO MISC
+    local contentMisc = Instance.new("ScrollingFrame")
+    contentMisc.Name = "ContentMisc"
+    contentMisc.Size = UDim2.new(1, -85, 1, -35)
+    contentMisc.Position = UDim2.new(0, 80, 0, 35)
+    contentMisc.BackgroundTransparency = 1
+    contentMisc.Visible = false
+    contentMisc.ZIndex = 11
+    contentMisc.ScrollBarThickness = 6
+    contentMisc.ScrollBarImageColor3 = Color3.fromRGB(150, 0, 0)
+    contentMisc.Parent = mainFrame
+    
+    local miscContentFrame = Instance.new("Frame")
+    miscContentFrame.Size = UDim2.new(1, 0, 0, 600)
+    miscContentFrame.BackgroundTransparency = 1
+    miscContentFrame.ZIndex = 11
+    miscContentFrame.Parent = contentMisc
+    
+    contentMisc.CanvasSize = UDim2.new(0, 0, 0, 600)
+    
+    local miscTitle = Instance.new("TextLabel")
+    miscTitle.Size = UDim2.new(1, -20, 0, 40)
+    miscTitle.Position = UDim2.new(0, 10, 0, 10)
+    miscTitle.BackgroundTransparency = 1
+    miscTitle.Text = "Miscellaneous"
+    miscTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+    miscTitle.TextSize = 20
+    miscTitle.Font = Enum.Font.GothamBold
+    miscTitle.ZIndex = 12
+    miscTitle.Parent = miscContentFrame
+    
+    -- Plastic Map Button
+    local plasticLabel = Instance.new("TextLabel")
+    plasticLabel.Size = UDim2.new(0, 200, 0, 35)
+    plasticLabel.Position = UDim2.new(0, 15, 0, 70)
+    plasticLabel.BackgroundTransparency = 1
+    plasticLabel.Text = "Plastic Map (FPS)"
+    plasticLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    plasticLabel.TextSize = 16
+    plasticLabel.Font = Enum.Font.GothamBold
+    plasticLabel.TextXAlignment = Enum.TextXAlignment.Left
+    plasticLabel.ZIndex = 12
+    plasticLabel.Parent = miscContentFrame
+    
+    plasticMapBtn = Instance.new("TextButton")
+    plasticMapBtn.Size = UDim2.new(0, 200, 0, 40)
+    plasticMapBtn.Position = UDim2.new(0, 250, 0, 70)
+    plasticMapBtn.BackgroundColor3 = Color3.fromRGB(80, 0, 0)
+    plasticMapBtn.BorderSizePixel = 1
+    plasticMapBtn.BorderColor3 = Color3.fromRGB(200, 0, 0)
+    plasticMapBtn.Text = "ATIVAR"
+    plasticMapBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    plasticMapBtn.TextSize = 14
+    plasticMapBtn.Font = Enum.Font.GothamBold
+    plasticMapBtn.ZIndex = 12
+    plasticMapBtn.Parent = miscContentFrame
+    
+    -- Freeze Time
+    local freezeLabel = Instance.new("TextLabel")
+    freezeLabel.Size = UDim2.new(0, 150, 0, 35)
+    freezeLabel.Position = UDim2.new(0, 15, 0, 130)
+    freezeLabel.BackgroundTransparency = 1
+    freezeLabel.Text = "Freeze Time"
+    freezeLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    freezeLabel.TextSize = 16
+    freezeLabel.Font = Enum.Font.GothamBold
+    freezeLabel.TextXAlignment = Enum.TextXAlignment.Left
+    freezeLabel.ZIndex = 12
+    freezeLabel.Parent = miscContentFrame
+    
+    freezeTimeBtn = Instance.new("TextButton")
+    freezeTimeBtn.Size = UDim2.new(0, 100, 0, 35)
+    freezeTimeBtn.Position = UDim2.new(0, 200, 0, 130)
+    freezeTimeBtn.BackgroundColor3 = Config.FreezeTime and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(80, 0, 0)
+    freezeTimeBtn.BorderSizePixel = 1
+    freezeTimeBtn.BorderColor3 = Color3.fromRGB(200, 0, 0)
+    freezeTimeBtn.Text = Config.FreezeTime and "ON" or "OFF"
+    freezeTimeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    freezeTimeBtn.TextSize = 14
+    freezeTimeBtn.Font = Enum.Font.GothamBold
+    freezeTimeBtn.ZIndex = 12
+    freezeTimeBtn.Parent = miscContentFrame
+    
+    -- Label hora
+    timeLabel = Instance.new("TextLabel")
+    timeLabel.Size = UDim2.new(0, 150, 0, 25)
+    timeLabel.Position = UDim2.new(0, 15, 0, 175)
+    timeLabel.BackgroundTransparency = 1
+    timeLabel.Text = "Hora: " .. string.format("%.1f", Config.FrozenTime)
+    timeLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    timeLabel.TextSize = 14
+    timeLabel.Font = Enum.Font.GothamBold
+    timeLabel.TextXAlignment = Enum.TextXAlignment.Left
+    timeLabel.ZIndex = 12
+    timeLabel.Parent = miscContentFrame
+    
+    -- Container do slider de tempo
+    local timeSliderContainer = Instance.new("Frame")
+    timeSliderContainer.Size = UDim2.new(0, 200, 0, 10)
+    timeSliderContainer.Position = UDim2.new(0, 15, 0, 205)
+    timeSliderContainer.BackgroundColor3 = Color3.fromRGB(40, 0, 0)
+    timeSliderContainer.BorderSizePixel = 0
+    timeSliderContainer.ZIndex = 12
+    timeSliderContainer.Parent = miscContentFrame
+    
+    local timeSliderCorner = Instance.new("UICorner")
+    timeSliderCorner.CornerRadius = UDim.new(0, 5)
+    timeSliderCorner.Parent = timeSliderContainer
+    
+    timeSlider = Instance.new("Frame")
+    timeSlider.Size = UDim2.new(Config.FrozenTime / 24, 0, 1, 0)
+    timeSlider.BackgroundColor3 = Color3.fromRGB(200, 0, 0)
+    timeSlider.BorderSizePixel = 0
+    timeSlider.ZIndex = 13
+    timeSlider.Parent = timeSliderContainer
+    
+    local timeSliderFillCorner = Instance.new("UICorner")
+    timeSliderFillCorner.CornerRadius = UDim.new(0, 5)
+    timeSliderFillCorner.Parent = timeSlider
+    
+    -- CONTEUDO CONFIG
+    local contentConfig = Instance.new("ScrollingFrame")
+    contentConfig.Name = "ContentConfig"
     contentConfig.Size = UDim2.new(1, -85, 1, -35)
     contentConfig.Position = UDim2.new(0, 80, 0, 35)
     contentConfig.BackgroundTransparency = 1
     contentConfig.Visible = false
     contentConfig.ZIndex = 11
+    contentConfig.ScrollBarThickness = 6
+    contentConfig.ScrollBarImageColor3 = Color3.fromRGB(150, 0, 0)
     contentConfig.Parent = mainFrame
+    
+    local configContentFrame = Instance.new("Frame")
+    configContentFrame.Size = UDim2.new(1, 0, 0, 500)
+    configContentFrame.BackgroundTransparency = 1
+    configContentFrame.ZIndex = 11
+    configContentFrame.Parent = contentConfig
+    
+    contentConfig.CanvasSize = UDim2.new(0, 0, 0, 500)
     
     local configTitle = Instance.new("TextLabel")
     configTitle.Size = UDim2.new(1, -20, 0, 40)
     configTitle.Position = UDim2.new(0, 10, 0, 10)
     configTitle.BackgroundTransparency = 1
-    configTitle.Text = "Configurações"
+    configTitle.Text = "Configuracoes"
     configTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
     configTitle.TextSize = 20
     configTitle.Font = Enum.Font.GothamBold
     configTitle.ZIndex = 12
-    configTitle.Parent = contentConfig
+    configTitle.Parent = configContentFrame
     
-    -- Tecla da Interface
-    local interfaceKeyLabel = Instance.new("TextLabel")
-    interfaceKeyLabel.Size = UDim2.new(0, 200, 0, 35)
-    interfaceKeyLabel.Position = UDim2.new(0, 20, 0, 70)
-    interfaceKeyLabel.BackgroundTransparency = 1
-    interfaceKeyLabel.Text = "Tecla Interface"
-    interfaceKeyLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    interfaceKeyLabel.TextSize = 16
-    interfaceKeyLabel.Font = Enum.Font.GothamBold
-    interfaceKeyLabel.TextXAlignment = Enum.TextXAlignment.Left
-    interfaceKeyLabel.ZIndex = 12
-    interfaceKeyLabel.Parent = contentConfig
-    
+    -- Interface Key
+    local interfaceLabel = Instance.new("TextLabel")
+    interfaceLabel.Size = UDim2.new(0, 200, 0, 35)
+    interfaceLabel.Position = UDim2.new(0, 15, 0, 70)
+    interfaceLabel.BackgroundTransparency = 1
+    interfaceLabel.Text = "Tecla Interface"
+    interfaceLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    interfaceLabel.TextSize = 16
+    interfaceLabel.Font = Enum.Font.GothamBold
+    interfaceLabel.TextXAlignment = Enum.TextXAlignment.Left
+
     interfaceKeyBtn = Instance.new("TextButton")
     interfaceKeyBtn.Size = UDim2.new(0, 100, 0, 35)
-    interfaceKeyBtn.Position = UDim2.new(0, 240, 0, 70)
+    interfaceKeyBtn.Position = UDim2.new(0, 250, 0, 70)
     interfaceKeyBtn.BackgroundColor3 = Color3.fromRGB(80, 0, 0)
     interfaceKeyBtn.BorderSizePixel = 1
     interfaceKeyBtn.BorderColor3 = Color3.fromRGB(200, 0, 0)
@@ -2593,236 +2933,339 @@ local function CreateMainGUI()
     interfaceKeyBtn.TextSize = 14
     interfaceKeyBtn.Font = Enum.Font.GothamBold
     interfaceKeyBtn.ZIndex = 12
-    interfaceKeyBtn.Parent = contentConfig
+    interfaceKeyBtn.Parent = configContentFrame
     
-    interfaceKeyBtn.MouseButton1Click:Connect(function()
-        interfaceKeyBtn.Text = "..."
-        local connection
-        connection = UserInputService.InputBegan:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.Keyboard then
-                Config.InterfaceKey = input.KeyCode.Name
-                interfaceKeyBtn.Text = Config.InterfaceKey
-                connection:Disconnect()
-            end
-        end)
-    end)
+    -- Aimbot Key
+    local aimbotKeyLabel = Instance.new("TextLabel")
+    aimbotKeyLabel.Size = UDim2.new(0, 200, 0, 35)
+    aimbotKeyLabel.Position = UDim2.new(0, 15, 0, 120)
+    aimbotKeyLabel.BackgroundTransparency = 1
+    aimbotKeyLabel.Text = "Aimbot Toggle Key"
+    aimbotKeyLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    aimbotKeyLabel.TextSize = 16
+    aimbotKeyLabel.Font = Enum.Font.GothamBold
+    aimbotKeyLabel.TextXAlignment = Enum.TextXAlignment.Left
+    aimbotKeyLabel.ZIndex = 12
+    aimbotKeyLabel.Parent = configContentFrame
     
-    -- Botão Salvar Config
-    local saveConfigBtn = Instance.new("TextButton")
-    saveConfigBtn.Size = UDim2.new(0, 200, 0, 50)
-    saveConfigBtn.Position = UDim2.new(0, 20, 0, 130)
-    saveConfigBtn.BackgroundColor3 = Color3.fromRGB(150, 0, 0)
-    saveConfigBtn.BorderSizePixel = 1
-    saveConfigBtn.BorderColor3 = Color3.fromRGB(200, 0, 0)
-    saveConfigBtn.Text = "SALVAR CONFIG"
-    saveConfigBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    saveConfigBtn.TextSize = 16
-    saveConfigBtn.Font = Enum.Font.GothamBold
-    saveConfigBtn.ZIndex = 12
-    saveConfigBtn.Parent = contentConfig
+    ehKeyBtn = Instance.new("TextButton")
+    ehKeyBtn.Size = UDim2.new(0, 100, 0, 35)
+    ehKeyBtn.Position = UDim2.new(0, 250, 0, 120)
+    ehKeyBtn.BackgroundColor3 = Color3.fromRGB(80, 0, 0)
+    ehKeyBtn.BorderSizePixel = 1
+    ehKeyBtn.BorderColor3 = Color3.fromRGB(200, 0, 0)
+    ehKeyBtn.Text = Config.EH_Key
+    ehKeyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    ehKeyBtn.TextSize = 14
+    ehKeyBtn.Font = Enum.Font.GothamBold
+    ehKeyBtn.ZIndex = 12
+    ehKeyBtn.Parent = configContentFrame
     
-    saveConfigBtn.MouseButton1Click:Connect(function()
-        if SaveConfigToFile() then
-            saveConfigBtn.Text = "SALVO!"
-            task.wait(1)
-            saveConfigBtn.Text = "SALVAR CONFIG"
-        else
-            saveConfigBtn.Text = "ERRO!"
-            task.wait(1)
-            saveConfigBtn.Text = "SALVAR CONFIG"
-        end
-    end)
+    -- Save Config Button
+    local saveBtn = Instance.new("TextButton")
+    saveBtn.Size = UDim2.new(0, 280, 0, 50)
+    saveBtn.Position = UDim2.new(0.5, -290, 0, 200)
+    saveBtn.BackgroundColor3 = Color3.fromRGB(150, 0, 0)
+    saveBtn.BorderSizePixel = 1
+    saveBtn.BorderColor3 = Color3.fromRGB(200, 0, 0)
+    saveBtn.Text = "SALVAR CONFIG"
+    saveBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    saveBtn.TextSize = 18
+    saveBtn.Font = Enum.Font.GothamBold
+    saveBtn.ZIndex = 12
+    saveBtn.Parent = configContentFrame
     
-    -- CONTEÚDO MISC
-    local contentMisc = Instance.new("Frame")
-    contentMisc.Size = UDim2.new(1, -85, 1, -35)
-    contentMisc.Position = UDim2.new(0, 80, 0, 35)
-    contentMisc.BackgroundTransparency = 1
-    contentMisc.Visible = false
-    contentMisc.ZIndex = 11
-    contentMisc.Parent = mainFrame
+    -- Load Config Button
+    local loadBtn = Instance.new("TextButton")
+    loadBtn.Size = UDim2.new(0, 280, 0, 50)
+    loadBtn.Position = UDim2.new(0.5, 10, 0, 200)
+    loadBtn.BackgroundColor3 = Color3.fromRGB(80, 0, 0)
+    loadBtn.BorderSizePixel = 1
+    loadBtn.BorderColor3 = Color3.fromRGB(200, 0, 0)
+    loadBtn.Text = "CARREGAR CONFIG"
+    loadBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    loadBtn.TextSize = 18
+    loadBtn.Font = Enum.Font.GothamBold
+    loadBtn.ZIndex = 12
+    loadBtn.Parent = configContentFrame
     
-    local miscTitle = Instance.new("TextLabel")
-    miscTitle.Size = UDim2.new(1, -20, 0, 40)
-    miscTitle.Position = UDim2.new(0, 10, 0, 10)
-    miscTitle.BackgroundTransparency = 1
-    miscTitle.Text = "MISC"
-    miscTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
-    miscTitle.TextSize = 20
-    miscTitle.Font = Enum.Font.GothamBold
-    miscTitle.ZIndex = 12
-    miscTitle.Parent = contentMisc
+    -- FUNCOES DE EVENTOS
     
-    -- Plastic Map Button
-    local plasticMapLabel = Instance.new("TextLabel")
-    plasticMapLabel.Size = UDim2.new(0, 200, 0, 35)
-    plasticMapLabel.Position = UDim2.new(0, 20, 0, 70)
-    plasticMapLabel.BackgroundTransparency = 1
-    plasticMapLabel.Text = "Plastic Map (FPS)"
-    plasticMapLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    plasticMapLabel.TextSize = 16
-    plasticMapLabel.Font = Enum.Font.GothamBold
-    plasticMapLabel.TextXAlignment = Enum.TextXAlignment.Left
-    plasticMapLabel.ZIndex = 12
-    plasticMapLabel.Parent = contentMisc
-    
-    plasticMapBtn = Instance.new("TextButton")
-    plasticMapBtn.Size = UDim2.new(0, 120, 0, 35)
-    plasticMapBtn.Position = UDim2.new(0, 240, 0, 70)
-    plasticMapBtn.BackgroundColor3 = plasticMapEnabled and Color3.fromRGB(200, 0, 0) or Color3.fromRGB(80, 0, 0)
-    plasticMapBtn.BorderSizePixel = 1
-    plasticMapBtn.BorderColor3 = Color3.fromRGB(200, 0, 0)
-    plasticMapBtn.Text = plasticMapEnabled and "ATIVO" or "ATIVAR"
-    plasticMapBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    plasticMapBtn.TextSize = 14
-    plasticMapBtn.Font = Enum.Font.GothamBold
-    plasticMapBtn.ZIndex = 12
-    plasticMapBtn.Parent = contentMisc
-    
-    plasticMapBtn.MouseButton1Click:Connect(function()
-        if not plasticMapEnabled then
-            ApplyPlasticMap()
-        end
-    end)
-    
-    -- FUNÇÕES DAS ABAS
-    local function ShowTab(tabName)
-        currentTab = tabName
-        
-        ehScrollFrame.Visible = (tabName == "Emergency Hamburg")
-        contentSky.Visible = (tabName == "Sky")
-        contentConfig.Visible = (tabName == "Config")
-        contentMisc.Visible = (tabName == "Misc")
-        
-        tabEH.BackgroundColor3 = (tabName == "Emergency Hamburg") and Color3.fromRGB(150, 0, 0) or Color3.fromRGB(60, 0, 0)
-        tabSky.BackgroundColor3 = (tabName == "Sky") and Color3.fromRGB(150, 0, 0) or Color3.fromRGB(60, 0, 0)
-        tabConfig.BackgroundColor3 = (tabName == "Config") and Color3.fromRGB(150, 0, 0) or Color3.fromRGB(60, 0, 0)
-        tabMisc.BackgroundColor3 = (tabName == "Misc") and Color3.fromRGB(150, 0, 0) or Color3.fromRGB(60, 0, 0)
-    end
-    
-    tabEH.MouseButton1Click:Connect(function() ShowTab("Emergency Hamburg") end)
-    tabSky.MouseButton1Click:Connect(function() ShowTab("Sky") end)
-    tabConfig.MouseButton1Click:Connect(function() ShowTab("Config") end)
-    tabMisc.MouseButton1Click:Connect(function() ShowTab("Misc") end)
-    
-    -- EVENTOS DOS BOTÕES EH
-    ehAimbotBtn.MouseButton1Click:Connect(function()
-        Config.EH_Enabled = not Config.EH_Enabled
-        UpdateUI()
-    end)
-    
-    ehAimLockBtn.MouseButton1Click:Connect(function()
-        Config.EH_AimPart = (Config.EH_AimPart == "Torso") and "Head" or "Torso"
-        UpdateUI()
-    end)
-    
-    ehESPBtn.MouseButton1Click:Connect(function()
-        Config.EH_ESP = not Config.EH_ESP
-        if Config.EH_ESP then
-            EnableESP()
-        else
-            ClearESP()
-        end
-        UpdateUI()
-    end)
-    
-    ehESPHealthBtn.MouseButton1Click:Connect(function()
-        Config.EH_ESPHealth = not Config.EH_ESPHealth
-        if Config.EH_ESPHealth then
-            EnableESP()
-        else
-            ClearESP()
-        end
-        UpdateUI()
-    end)
-    
-    ehFriendsModeBtn.MouseButton1Click:Connect(function()
-        Config.EH_FriendsMode = not Config.EH_FriendsMode
-        UpdateUI()
-    end)
-    
-    ehSpinBotBtn.MouseButton1Click:Connect(function()
-        ToggleSpinBot()
-    end)
-    
-    ehOGSniperBtn.MouseButton1Click:Connect(function()
-        ToggleOGSniper()
-    end)
-    
-    ehKeyBtn.MouseButton1Click:Connect(function()
-        ehKeyBtn.Text = "..."
-        local connection
-        connection = UserInputService.InputBegan:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.Keyboard then
-                Config.EH_Key = input.KeyCode.Name
-                ehKeyBtn.Text = Config.EH_Key
-                connection:Disconnect()
-            end
-        end)
-    end)
-    
-    -- FECHAR/MINIMIZAR
+    -- Fechar pelo X - mostra miniButton
     closeBtn.MouseButton1Click:Connect(function()
+        closedByX = true
         mainFrame.Visible = false
         miniButton.Visible = true
         PanelOpen = false
     end)
     
+    -- Mini button click
     miniButton.MouseButton1Click:Connect(function()
         mainFrame.Visible = true
         miniButton.Visible = false
         PanelOpen = true
+        closedByX = false
     end)
     
-    -- ARRASTAR PAINEL
-    local function UpdateDrag(input)
-        local delta = input.Position - dragStart
-        mainFrame.Position = UDim2.new(dragStartPos.X.Scale, dragStartPos.X.Offset + delta.X, dragStartPos.Y.Scale, dragStartPos.Y.Offset + delta.Y)
+    -- Tab switching
+    local function SwitchTab(tabName)
+        currentTab = tabName
+        
+        ehScrollFrame.Visible = (tabName == "Emergency Hamburg")
+        contentSky.Visible = (tabName == "Sky")
+        contentMisc.Visible = (tabName == "Misc")
+        contentConfig.Visible = (tabName == "Config")
+        
+        tabEH.BackgroundColor3 = (tabName == "Emergency Hamburg") and Color3.fromRGB(150, 0, 0) or Color3.fromRGB(60, 0, 0)
+        tabSky.BackgroundColor3 = (tabName == "Sky") and Color3.fromRGB(150, 0, 0) or Color3.fromRGB(60, 0, 0)
+        tabMisc.BackgroundColor3 = (tabName == "Misc") and Color3.fromRGB(150, 0, 0) or Color3.fromRGB(60, 0, 0)
+        tabConfig.BackgroundColor3 = (tabName == "Config") and Color3.fromRGB(150, 0, 0) or Color3.fromRGB(60, 0, 0)
     end
     
-    titleBar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            isDragging = true
-            dragStart = input.Position
-            dragStartPos = mainFrame.Position
-        end
+    tabEH.MouseButton1Click:Connect(function() SwitchTab("Emergency Hamburg") end)
+    tabSky.MouseButton1Click:Connect(function() SwitchTab("Sky") end)
+    tabMisc.MouseButton1Click:Connect(function() SwitchTab("Misc") end)
+    tabConfig.MouseButton1Click:Connect(function() SwitchTab("Config") end)
+    
+    -- EH Events
+    ehAimbotBtn.MouseButton1Click:Connect(function()
+        Config.EH_Enabled = not Config.EH_Enabled
+        UpdateUI()
+        SaveConfigToFile()
     end)
     
-    titleBar.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            isDragging = false
+    ehAimLockBtn.MouseButton1Click:Connect(function()
+        Config.EH_AimPart = (Config.EH_AimPart == "Torso") and "Head" or "Torso"
+        UpdateUI()
+        SaveConfigToFile()
+    end)
+    
+    ehESPBtn.MouseButton1Click:Connect(function()
+        Config.EH_ESP = not Config.EH_ESP
+        if Config.EH_ESP then EnableESP() else DisableESP() end
+        UpdateUI()
+        SaveConfigToFile()
+    end)
+    
+    ehESPHealthBtn.MouseButton1Click:Connect(function()
+        Config.EH_ESPHealth = not Config.EH_ESPHealth
+        if Config.EH_ESPHealth then EnableESP() else DisableESP() end
+        UpdateUI()
+        SaveConfigToFile()
+    end)
+    
+    ehSpinBotBtn.MouseButton1Click:Connect(function()
+        ToggleSpinBot()
+        SaveConfigToFile()
+    end)
+    
+    ehOGSniperBtn.MouseButton1Click:Connect(function()
+        ToggleOGSniper()
+        SaveConfigToFile()
+    end)
+    
+    ehFriendsModeBtn.MouseButton1Click:Connect(function()
+        Config.EH_FriendsMode = not Config.EH_FriendsMode
+        UpdateUI()
+        SaveConfigToFile()
+    end)
+    
+    -- Slider SpinBot
+    local function UpdateSpinSpeed(input)
+        local container = sliderContainer
+        local relativeX = math.clamp((input.Position.X - container.AbsolutePosition.X) / container.AbsoluteSize.X, 0, 1)
+        local newSpeed = math.floor(relativeX * 1000)
+        Config.EH_SpinSpeed = newSpeed
+        UpdateUI()
+    end
+    
+    sliderContainer.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            isDragging = true
+            dragStart = input
+            dragStartPos = ehSpinSpeedSlider.Size
+            UpdateSpinSpeed(input)
         end
     end)
     
     UserInputService.InputChanged:Connect(function(input)
-        if isDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-            UpdateDrag(input)
+        if isDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            UpdateSpinSpeed(input)
         end
     end)
     
-    -- TECLA INTERFACE
-    UserInputService.InputBegan:Connect(function(input)
-        if input.KeyCode == Enum.KeyCode[Config.InterfaceKey or "Insert"] then
-            mainFrame.Visible = not mainFrame.Visible
-            miniButton.Visible = not mainFrame.Visible
-            PanelOpen = not PanelOpen
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            isDragging = false
+            SaveConfigToFile()
         end
     end)
     
-    -- TECLA AIMBOT
-    UserInputService.InputBegan:Connect(function(input)
-        if input.KeyCode == Enum.KeyCode[Config.EH_Key] and IsInEmergencyHamburg() then
-            Config.EH_Enabled = not Config.EH_Enabled
+    -- Slider Freeze Time
+    local timeDragging = false
+    local function UpdateTimeSlider(input)
+        local container = timeSliderContainer
+        local relativeX = math.clamp((input.Position.X - container.AbsolutePosition.X) / container.AbsoluteSize.X, 0, 1)
+        local newTime = relativeX * 24
+        Config.FrozenTime = newTime
+        if Config.FreezeTime then
+            Lighting.ClockTime = newTime
+        end
+        UpdateUI()
+    end
+    
+    timeSliderContainer.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            timeDragging = true
+            UpdateTimeSlider(input)
+        end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if timeDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            UpdateTimeSlider(input)
+        end
+    end)
+    
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            timeDragging = false
+            SaveConfigToFile()
+        end
+    end)
+    
+    -- Key binding
+    local waitingForKey = false
+    local keyToBind = nil
+    
+    ehKeyBtn.MouseButton1Click:Connect(function()
+        if waitingForKey then return end
+        waitingForKey = true
+        keyToBind = "EH_Key"
+        ehKeyBtn.Text = "..."
+    end)
+    
+    interfaceKeyBtn.MouseButton1Click:Connect(function()
+        if waitingForKey then return end
+        waitingForKey = true
+        keyToBind = "InterfaceKey"
+        interfaceKeyBtn.Text = "..."
+    end)
+    
+    -- TOGGLE AIMBOT PELA TECLA SEM ABRIR INTERFACE
+    UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if gameProcessed then return end
+        
+        if waitingForKey and input.UserInputType == Enum.UserInputType.Keyboard then
+            local keyName = tostring(input.KeyCode):gsub("Enum.KeyCode.", "")
+            if keyToBind == "EH_Key" then
+                Config.EH_Key = keyName
+            elseif keyToBind == "InterfaceKey" then
+                Config.InterfaceKey = keyName
+            end
+            waitingForKey = false
+            keyToBind = nil
             UpdateUI()
+            SaveConfigToFile()
+            return
+        end
+        
+        -- Toggle interface pela tecla configurada
+        if input.UserInputType == Enum.UserInputType.Keyboard then
+            local keyName = tostring(input.KeyCode):gsub("Enum.KeyCode.", "")
+            
+            -- Toggle Aimbot pela tecla configurada (sem abrir interface)
+            if keyName == Config.EH_Key then
+                Config.EH_Enabled = not Config.EH_Enabled
+                UpdateUI()
+                SaveConfigToFile()
+                return
+            end
+            
+            -- Toggle Interface pela tecla configurada
+            if keyName == Config.InterfaceKey then
+                PanelOpen = not PanelOpen
+                mainFrame.Visible = PanelOpen
+                if not PanelOpen then
+                    closedByX = false
+                    miniButton.Visible = false
+                end
+            end
         end
     end)
     
-    -- ATUALIZAR LISTA INICIAL
-    UpdateBlockedPlayersList()
+    -- Add player to blocked list
+    addPlayerBtn.MouseButton1Click:Connect(function()
+        local playerName = addPlayerInput.Text:gsub("^%s*(.-)%s*$", "%1")
+        if playerName ~= "" then
+            if AddBlockedPlayer(playerName) then
+                addPlayerInput.Text = ""
+                UpdateBlockedPlayersList()
+                SaveConfigToFile()
+            end
+        end
+    end)
+    
+    -- Plastic Map
+    plasticMapBtn.MouseButton1Click:Connect(function()
+        ApplyPlasticMap()
+    end)
+    
+    -- Freeze Time
+    freezeTimeBtn.MouseButton1Click:Connect(function()
+        ToggleFreezeTime()
+        SaveConfigToFile()
+    end)
+    
+    -- Save/Load Config
+    saveBtn.MouseButton1Click:Connect(function()
+        if SaveConfigToFile() then
+            print("Configuracao salva!")
+        else
+            print("Erro ao salvar configuracao!")
+        end
+    end)
+    
+    loadBtn.MouseButton1Click:Connect(function()
+        if LoadConfigFromFile() then
+            if ogSniperEnabled then
+                EnableNoScope()
+                EnableFastSniper()
+            else
+                DisableNoScope()
+                DisableFastSniper()
+            end
+            
+            if Config.EH_SpinBot then
+                StartSpinBot()
+            else
+                StopSpinBot()
+            end
+            
+            if Config.FreezeTime then
+                EnableFreezeTime()
+            else
+                DisableFreezeTime()
+            end
+            
+            UpdateUI()
+            print("Configuracao carregada!")
+        else
+            print("Erro ao carregar configuracao!")
+        end
+    end)
+    
+    -- Inicializar
     UpdateUI()
+    UpdateBlockedPlayersList()
     
     -- Carregar config salva
     LoadConfigFromFile()
+    
+    -- Aplicar ceu salvo
+    if Config.CurrentSkyId then
+        ApplySky(Config.CurrentSkyId)
+    end
     
     -- Iniciar SpinBot se estiver ativo
     if Config.EH_SpinBot then
@@ -2830,22 +3273,38 @@ local function CreateMainGUI()
     end
     
     -- Iniciar OG Sniper se estiver ativo
-    if Config.EH_OGSniper then
-        ogSniperEnabled = true
+    if ogSniperEnabled then
         EnableNoScope()
         EnableFastSniper()
     end
     
-    print("SPHXZ Script carregado com sucesso!")
+    -- Iniciar Freeze Time se estiver ativo
+    if Config.FreezeTime then
+        EnableFreezeTime()
+    end
+    
+    print("SPHXZ Script Carregado!")
 end
 
 -- ============================================
--- INICIALIZAÇÃO
+-- INICIALIZACAO
 -- ============================================
-if not AuthSuccess then
+local function Initialize()
+    local cachedKey = LoadCache()
+    if cachedKey then
+        local ok, msg = ValidateKey(cachedKey)
+        if ok then
+            AuthSuccess = true
+            CreateMainGUI()
+            return
+        else
+            ClearCache()
+        end
+    end
+    
     CreateAuthUI(function()
         CreateMainGUI()
     end)
-else
-    CreateMainGUI()
 end
+
+Initialize()
